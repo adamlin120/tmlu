@@ -21,10 +21,10 @@ def query(prompt: str) -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input_jsonl", 
+        "--prompt_jsonl", 
         type=str, 
         required=True,
-        help="Path to the imput jsonl for formated prompts."
+        help="Path to the jsonl that store generated formated prompts."
     )
     parser.add_argument(
         "--output_jsonl", 
@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     output = []
-    with open(args.input_jsonl, "r", encoding="UTF-8") as f:
+    with open(args.prompt_jsonl, "r", encoding="UTF-8") as f:
         input_jsonl = f.readlines()
         for line in tqdm(input_jsonl):
             question = json.loads(line)

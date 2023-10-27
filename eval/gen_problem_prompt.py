@@ -62,10 +62,10 @@ if __name__ == "__main__":
         help="Path to the example jsonl for few-shot demonstrations."
     )
     parser.add_argument(
-        "--output_jsonl", 
+        "--prompt_jsonl", 
         type=str, 
         required=True, 
-        help="Path to the output jsonl for formated prompts."
+        help="Output jsonl that will be used to store the formated prompts."
     )
 
     args = parser.parse_args()
@@ -103,7 +103,7 @@ if __name__ == "__main__":
                     "answer": answer
                 })
     
-    with open(args.output_jsonl, "w", encoding="UTF-8") as f:
+    with open(args.prompt_jsonl, "w", encoding="UTF-8") as f:
         for prediction in output:
             line = json.dumps(prediction, ensure_ascii=False)
             f.write(line+"\n")
