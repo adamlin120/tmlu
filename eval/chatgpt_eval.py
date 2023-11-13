@@ -1,4 +1,4 @@
-import openai
+from openai import OpenAI
 import json
 import argparse
 from tqdm import tqdm
@@ -6,17 +6,17 @@ import configparser
 
 config = configparser.ConfigParser()
 config.read('config.ini')
-openai.api_key = config["OpenAI"]["api_key"]
+client = OpenAI(api_key=config["OpenAI"]["api_key"])
 
 def query(prompt: str) -> str:
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": ""},
             {"role": "user", "content": prompt},
         ]
     )
-    return response['choices'][0]['message']['content']
+    return response.choices[0].message.content
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

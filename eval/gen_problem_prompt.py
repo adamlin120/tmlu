@@ -1,4 +1,3 @@
-import random
 import json
 import argparse
 from typing import List, Dict, Tuple
@@ -8,14 +7,15 @@ import os
 def template(question: str, choices: List[str], answers: List[str] = None) -> str:
     choices_prompt = ""
     for i, choice in enumerate(choices):
-        choices_prompt += f"{chr(i + ord('A'))}. {choice}\n"
+        choices_prompt += f"({chr(i + ord('A'))}) {choice}\n"
     if answers:
-        return f"問題：{question}\n{choices_prompt}正確答案：{''.join(answers)}"
+        return f"問題：{question}\n{choices_prompt}正確答案：({')('.join(answers)})"
     else:
-        return f"問題：{question}\n{choices_prompt}正確答案："
+        return f"問題：{question}\n{choices_prompt}正確答案：("
 
 def parse_problem(problem: Dict[str, str]) -> Tuple[str, List[str], List[str]]:
     question = problem["question"]
+    question = question.replace("\n\n", "\n")
     correct_choices = problem["correct_choices"]
     incorrect_choices = problem["incorrect_choices"]
     choices: List[Tuple[str, bool]] = []
@@ -23,7 +23,7 @@ def parse_problem(problem: Dict[str, str]) -> Tuple[str, List[str], List[str]]:
         choices.append((choice, True))
     for choice in incorrect_choices:
         choices.append((choice, False))
-    random.shuffle(choices)
+    choices.sort()
 
     answers: List[str] = []
     for i, choice in enumerate(choices):
