@@ -1,11 +1,14 @@
 import abc
 from abc import abstractmethod
-from typing import List
+from typing import List, Optional, Union
 from vllm import LLM, SamplingParams
+from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from openai import OpenAI
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
 from tqdm import tqdm
-
+import transformers
+import torch
+import torch.nn.functional as F
 class LM(abc.ABC):
 
     def __init__(self, max_tokens, temperature):
@@ -16,8 +19,26 @@ class LM(abc.ABC):
     def generate(self, prompts):
         pass
 
-class HFLM(LM):
-    def __init__(self, model_name, tensor_parallel_size, max_tokens, temperature):
+def _get_dtype(
+    dtype: Union[str, torch.dtype], config: Optional[transformers.AutoConfig] = None
+) -> torch.dtype:
+    """From https://github.com/EleutherAI/lm-evaluation-harness/blob/master/lm_eval/models/huggingface.py"""
+    if dtype is None and config is not None:
+        _torch_dtype = config.torch_dtype
+    elif isinstance(dtype, str) and dtype != "auto":
+        _torch_dtype = getattr(torch, dtype)
+    else:
+        _torch_dtype = dtype
+    return _torch_dtype
+
+class HFLM_vLLM(LM):
+    def __init__(
+        self,
+        model_name,
+        tensor_parallel_size,
+        max_tokens,
+        temperature,
+    ):
         super().__init__(max_tokens, temperature)
         self.llm = LLM(
             model=model_name,
@@ -34,15 +55,89 @@ class HFLM(LM):
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         answers = [outputs[i].outputs[0].text for i in range(len(outputs))]
         return answers
-    
-class OPENAI_LM(LM):
-    def __init__(self, model_name, max_tokens, temperature):
+
+class HFLM_transformers(LM):
+    def __init__(
+        self,
+        model_name,
+        max_tokens,
+        temperature,
+        revision=None,
+        dtype=None
+    ):
         super().__init__(max_tokens, temperature)
-        import configparser
-        config = configparser.ConfigParser()
-        config.read('config.ini')
+        self.config = AutoConfig.from_pretrained(
+            model_name,
+            revision=revision
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            revision=revision
+        )
+        self.llm = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            revision=revision,
+            torch_dtype=_get_dtype(dtype, self.config)
+        ).cuda()
+        self.llm.eval()
+    
+    def encode(self, text):
+        encoded = self.tokenizer.encode(
+            text,
+            add_special_tokens=False,
+            return_tensors="pt"
+        )
+        return encoded
+
+    def encode_pair(self, context, continuation):
+        whole_encoded = self.encode(context + continuation)[0]
+        context_encoded = self.encode(context)[0]
+        context_encoded_len = len(context_encoded)
+        continuation_encoded = whole_encoded[context_encoded_len:]
+        return context_encoded, continuation_encoded
+    
+    def generate(self, prompts, choice_nums):
+        with torch.no_grad():
+            answers = []
+            pgbr = tqdm(len(prompts))
+            for prompt, choice_num in zip(prompts, choice_nums):
+                logits = []
+                for i in range(choice_num):
+                    choice = chr(i + ord('A'))
+                    prompt_encoded, choice_encoded = self.encode_pair(
+                        prompt, 
+                        choice
+                    )
+                    choice_encoded_len = len(choice_encoded)
+                    logit = self.llm(prompt_encoded[:-1].cuda())["logits"]
+                    logit = F.log_softmax(logit, dim=-1).cpu()
+                    choice_logit = torch.gather(
+                        logit[-choice_encoded_len:], 
+                        1, 
+                        choice_encoded.unsqueeze(-1)
+                    ).squeeze(dim=-1)
+                    logits.append(choice_logit.sum())
+
+                logits = torch.stack(logits)
+                answer = torch.argmax(logits)
+                answers.append(chr(int(answer) + ord('A')))
+                pgbr.update()
+        return answers
+
+class OpenAI_LM(LM):
+    def __init__(
+            self, 
+            model_name, 
+            max_tokens, 
+            temperature,
+            api_key,
+            base_url=None
+        ):
+        super().__init__(max_tokens, temperature)
+
         self.client = OpenAI(
-            api_key=config["OpenAI"]["api_key"],
+            api_key=api_key,
+            base_url=base_url,
             timeout=20.0,
             max_retries=100
         )
@@ -68,14 +163,17 @@ class OPENAI_LM(LM):
             answers.append(answer)
         return answers
     
-class ANTHROPIC_LM(LM):
-    def __init__(self, model_name, max_tokens, temperature):
+class Anthropic_LM(LM):
+    def __init__(
+            self, 
+            model_name, 
+            max_tokens, 
+            temperature,
+            api_key,
+        ):
         super().__init__(max_tokens, temperature)
-        import configparser
-        config = configparser.ConfigParser()
-        config.read('config.ini')
         self.client = Anthropic(
-            api_key=config["Anthropic"]["api_key"],
+            api_key=api_key,
             timeout=20.0,
             max_retries=100
         )

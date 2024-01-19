@@ -1,11 +1,17 @@
 import argparse
 from datasets import load_dataset
 from typing import List, Dict, Tuple, Set, Callable
-from model import HFLM, OPENAI_LM, ANTHROPIC_LM
+from transformers import AutoTokenizer
+from model import HFLM_vLLM, HFLM_transformers, OpenAI_LM, Anthropic_LM
 from template import hf_template, openai_template, anthropic_template
 import logging
 from pprint import pprint
+import configparser
+import os
+import json
 
+config = configparser.ConfigParser()
+config.read('config.ini')
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -24,11 +30,16 @@ SUBSETS = [
     'GSAT_chemistry',
     'GSAT_biology',
     'GSAT_physics',
+    'GSAT_earth_science',
     'GSAT_mathematics',
     'GSAT_geography',
     'GSAT_history',
     'GSAT_civics',
+    'CAP_mathematics',
     'CAP_biology',
+    'CAP_history',
+    'CAP_civics',
+    'CAP_geography',
     'CAP_physics',
     'CAP_chemistry',
     'CAP_earth_science',
@@ -63,6 +74,9 @@ def parse_args():
         help="Model name",
     )
     parser.add_argument(
+        "--base_url", type=str, default=None, help="The base url for OpenAI python API library."
+    )
+    parser.add_argument(
         "--temperature", type=float, default=0.0, help="Sampling temperature"
     )
     parser.add_argument(
@@ -74,8 +88,13 @@ def parse_args():
     parser.add_argument(
         "--subsets", type=str, default='ALL', help="The subsets of TMLU (splited by comma). Default is 'ALL'."
     )
+    parser.add_argument(
+        "--use_logits", action='store_true', default=False, help="Choose the answer base on the logits of each choice."
+    )
+    parser.add_argument(
+        "--revision", type=str, default=None, help="The revision of the huggingface model."
+    )
     return parser.parse_args()
-
 
 
 def parse_example(example: Dict[str, str]) -> Tuple[str, List[str], List[str]]:
@@ -100,7 +119,7 @@ def parse_example(example: Dict[str, str]) -> Tuple[str, List[str], List[str]]:
 def format_problem(
         example: Dict[str, str], 
         model_template: Callable,
-        topic_line: str ="以下題目為選擇題，答案可能為單個或多個。",
+        topic_line: str ="以下選擇題為出自臺灣的考題，答案為其中一個選項。",
         fewshot_examples: List[Dict[str, str]] = None,
     ) -> Tuple[str, List[str]]:
     question, choices, answer = parse_example(example)
@@ -114,6 +133,7 @@ def format_problem(
     prompt += example_prompt
     example["prompt"] = prompt
     example["answer"] = answer
+    example["choice_num"] = len(choices)
     return example
 
 def check_ans(raw_response: str, answer: Set[str]):
@@ -142,14 +162,45 @@ def check_ans(raw_response: str, answer: Set[str]):
 if __name__ == "__main__":
     args = parse_args()
 
-    is_openai_chat_model = args.model in OPENAI_MODELS
+    is_openai_chat_model = args.model in OPENAI_MODELS or args.base_url
     is_anthropic_chat_model = args.model in ANTHROPIC_MODELS
+    assert not ((is_openai_chat_model or is_anthropic_chat_model) and args.use_logits), "API based model doesn't support evaluation based on logits."
+
+
     if is_openai_chat_model:
-        model = OPENAI_LM(args.model, args.max_tokens, args.temperature)
+        api_key=config[args.model]["api_key"]
+        model = OpenAI_LM(
+            args.model, 
+            args.max_tokens, 
+            args.temperature,
+            api_key,
+            args.base_url
+        )
     elif is_anthropic_chat_model:
-        model = ANTHROPIC_LM(args.model, args.max_tokens, args.temperature)
+        api_key=config[args.model]["api_key"]
+        model = Anthropic_LM(
+            args.model, 
+            args.max_tokens, 
+            args.temperature, 
+            api_key
+        )
+    elif args.use_logits:
+        model = HFLM_transformers(
+            args.model,
+            args.max_tokens,
+            args.temperature,
+            args.revision
+        )
     else:
-        model = HFLM(args.model, args.tensor_parallel_size, args.max_tokens, args.temperature)
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model,
+        )
+        model = HFLM_vLLM(
+            args.model, 
+            args.tensor_parallel_size,
+            args.max_tokens,
+            args.temperature
+        )
 
     if args.subsets == "ALL":
         subsets = SUBSETS
@@ -159,6 +210,8 @@ if __name__ == "__main__":
             assert(subset in SUBSETS), f"{subset} is not an available subset of TMLU."    
 
     results = {}
+    log_root = os.path.join("log", args.model.replace("/", "_"))
+    os.makedirs(log_root, exist_ok=True)
     for subset_name in subsets:
         logging.info(f"Evaluating {subset_name}")
         test_data = load_dataset(
@@ -189,6 +242,15 @@ if __name__ == "__main__":
                 }
             )
             outputs = model.generate(test_data["prompt"], prefill="正確答案：(")
+        elif args.use_logits:
+            test_data = test_data.map(
+                format_problem, 
+                fn_kwargs={
+                    "model_template": hf_template,
+                    "fewshot_examples" : fs_data,
+                }
+            )
+            outputs = model.generate(test_data["prompt"], test_data["choice_num"])
         else:
             test_data = test_data.map(
                 format_problem, 
@@ -197,11 +259,29 @@ if __name__ == "__main__":
                     "fewshot_examples" : fs_data,
                 }
             )
+            test_data = test_data.map(
+                lambda x: {
+                    "prompt": tokenizer.apply_chat_template(
+                        [{"role": "user", "content": x["prompt"]}],
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                }
+            )
             outputs = model.generate(test_data["prompt"])
         scores = [
             1 if check_ans(output, row["answer"]) else 0 for output, row in zip(outputs, test_data)
         ]
         avg_score = sum(scores) / len(scores)
         results[subset_name] = avg_score
-        logging.info(f"AVG score of {subset_name}: {avg_score:.4f}")
+        with open(os.path.join(log_root, f"{subset_name}_out.jsonl"), "w") as f:
+            for output, row in zip(outputs, test_data):
+                line = {
+                    "id": row["id"],
+                    "prompt": row["prompt"],
+                    "full_response": output,
+                    "gold_answer": row["answer"]
+                }
+                f.write(json.dumps(line, ensure_ascii=False)+"\n")
+
     pprint(results)
