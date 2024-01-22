@@ -11,7 +11,7 @@ $python3 tmlu_eval.py \
 	--model [Model name on huggingface or path] \
 	--dtype [torch type for the model, default will follow the model config] \
 	--temperature [TEMPERATURE] \
-	--use_logits \
+	--prob_based \
 	--subsets [Choose subsets of TMLU (names splited by comma) for evalutaion. Default is 'ALL'] \
 	--log_dir [Directory for saving evaluation log]
 ```
@@ -25,7 +25,7 @@ $python3 tmlu_eval.py \
 	--model yentinglin/Taiwan-LLM-7B-v2.1-chat \
 	--dtype float16 \
 	--temperature 0.0 \
-	--use_logits \
+	--prob_based \
 	--subsets AST_chinese,AST_mathematics \
 	--log_dir log/prob_based/Taiwan-LLM-7B-v2.1-chat
 ```
@@ -55,7 +55,6 @@ $python3 tmlu_eval.py \
 	--dtype float16 \
 	--temperature 0.0 \
 	--max_tokens 128 \
-	--use_logits \
 	--subsets AST_chinese,AST_mathematics \
 	--tensor_parallel_size 1 \
 	--log_dir log/gen_based/Taiwan-LLM-7B-v2.1-chat
