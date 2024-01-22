@@ -79,12 +79,12 @@ class HFLM_transformers(LM):
             model_name,
             revision=revision
         )
-        self.tokenizer.truncation_side = 'left'
         self.llm = AutoModelForCausalLM.from_pretrained(
             model_name,
             revision=revision,
             torch_dtype=_get_dtype(dtype, self.config)
         ).cuda()
+        self.model_max_length = self.tokenizer.model_max_length
         self.llm.eval()
     
     def get_tokenizer(self):
@@ -94,17 +94,18 @@ class HFLM_transformers(LM):
         encoded = self.tokenizer.encode(
             text,
             add_special_tokens=False,
-            truncation=True,
             return_tensors="pt"
         )
         return encoded
 
-    def encode_pair(self, context, continuation):
-        whole_encoded = self.encode(context + continuation)
-        context_encoded = self.encode(context)
-        context_encoded_len = context_encoded.shape[1]
-        continuation_encoded = whole_encoded[:, context_encoded_len:]
-        return context_encoded, continuation_encoded
+    def encode_pair(self, context, conti):
+        whole_enc = self.encode(context + conti)
+        context_enc = self.encode(context)
+        context_enc_len = context_enc.shape[1]
+        conti_enc = whole_enc[:, context_enc_len:]
+        conti_enc_len = conti_enc.shape[1]
+        context_enc = context_enc[:, -(self.model_max_length - conti_enc_len):]
+        return context_enc, conti_enc
     
     def generate(self, prompts, choice_nums):
         with torch.no_grad():
