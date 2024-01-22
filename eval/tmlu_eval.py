@@ -35,6 +35,7 @@ SUBSETS = [
     'GSAT_geography',
     'GSAT_history',
     'GSAT_civics',
+    'CAP_chinese',
     'CAP_mathematics',
     'CAP_biology',
     'CAP_history',
@@ -70,11 +71,14 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="yentinglin/Taiwan-LLM-7B-v2.0.1-chat",
+        default="yentinglin/Taiwan-LLM-7B-v2.1-chat",
         help="Model name",
     )
     parser.add_argument(
-        "--base_url", type=str, default=None, help="The base url for OpenAI python API library."
+        "--revision", type=str, default=None, help="The revision of the huggingface model."
+    )
+    parser.add_argument(
+        "--dtype", type=str, default=None, help="The dtype of the model."
     )
     parser.add_argument(
         "--temperature", type=float, default=0.0, help="Sampling temperature"
@@ -83,17 +87,18 @@ def parse_args():
         "--max_tokens", type=int, default=128, help="Max tokens for generation"
     )
     parser.add_argument(
-        "--tensor_parallel_size", type=int, default=1, help="Tensor parallel size"
+        "--subsets", type=str, default='ALL', help="The subsets of TMLU (splited by comma). Default is 'ALL'."
     )
     parser.add_argument(
-        "--subsets", type=str, default='ALL', help="The subsets of TMLU (splited by comma). Default is 'ALL'."
+        "--base_url", type=str, default=None, help="The base url for OpenAI python API library."
+    )
+    parser.add_argument(
+        "--tensor_parallel_size", type=int, default=1, help="Tensor parallel size"
     )
     parser.add_argument(
         "--use_logits", action='store_true', default=False, help="Choose the answer base on the logits of each choice."
     )
-    parser.add_argument(
-        "--revision", type=str, default=None, help="The revision of the huggingface model."
-    )
+    
     return parser.parse_args()
 
 
@@ -136,7 +141,7 @@ def format_problem(
     example["choice_num"] = len(choices)
     return example
 
-def check_ans(raw_response: str, answer: Set[str]):
+def check_ans(raw_response: str, answer: List[str]):
     def is_ans_format(text: str):
         if '正確答案' in text:
             return True
@@ -189,17 +194,22 @@ if __name__ == "__main__":
             args.model,
             args.max_tokens,
             args.temperature,
-            args.revision
+            args.revision,
+            args.dtype
         )
+        tokenizer = model.get_tokenizer()
     else:
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
+            revision=args.revision
         )
         model = HFLM_vLLM(
             args.model, 
             args.tensor_parallel_size,
             args.max_tokens,
-            args.temperature
+            args.temperature,
+            args.revision,
+            args.dtype
         )
 
     if args.subsets == "ALL":
@@ -210,7 +220,10 @@ if __name__ == "__main__":
             assert(subset in SUBSETS), f"{subset} is not an available subset of TMLU."    
 
     results = {}
-    log_root = os.path.join("log", args.model.replace("/", "_"))
+    if args.use_logits:
+        log_root = os.path.join("log", f"{args.model.replace('/', '_')}_logits")
+    else:
+        log_root = os.path.join("log", args.model.replace("/", "_"))
     os.makedirs(log_root, exist_ok=True)
     for subset_name in subsets:
         logging.info(f"Evaluating {subset_name}")
@@ -250,6 +263,15 @@ if __name__ == "__main__":
                     "fewshot_examples" : fs_data,
                 }
             )
+            test_data = test_data.map(
+                lambda x: {
+                    "prompt": tokenizer.apply_chat_template(
+                        [{"role": "user", "content": x["prompt"]}],
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    ) + "\n正確答案：("
+                }
+            )
             outputs = model.generate(test_data["prompt"], test_data["choice_num"])
         else:
             test_data = test_data.map(
@@ -265,7 +287,7 @@ if __name__ == "__main__":
                         [{"role": "user", "content": x["prompt"]}],
                         tokenize=False,
                         add_generation_prompt=True,
-                    )
+                    ) + "\n正確答案：("
                 }
             )
             outputs = model.generate(test_data["prompt"])

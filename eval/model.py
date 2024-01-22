@@ -9,15 +9,6 @@ from tqdm import tqdm
 import transformers
 import torch
 import torch.nn.functional as F
-class LM(abc.ABC):
-
-    def __init__(self, max_tokens, temperature):
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-
-    @abstractmethod
-    def generate(self, prompts):
-        pass
 
 def _get_dtype(
     dtype: Union[str, torch.dtype], config: Optional[transformers.AutoConfig] = None
@@ -31,6 +22,16 @@ def _get_dtype(
         _torch_dtype = dtype
     return _torch_dtype
 
+class LM(abc.ABC):
+
+    def __init__(self, max_tokens, temperature):
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+
+    @abstractmethod
+    def generate(self, prompts):
+        pass
+
 class HFLM_vLLM(LM):
     def __init__(
         self,
@@ -38,6 +39,8 @@ class HFLM_vLLM(LM):
         tensor_parallel_size,
         max_tokens,
         temperature,
+        revision=None,
+        dtype=None
     ):
         super().__init__(max_tokens, temperature)
         self.llm = LLM(
@@ -45,6 +48,8 @@ class HFLM_vLLM(LM):
             tensor_parallel_size=tensor_parallel_size,
             max_num_batched_tokens=40960,
             quantization="AWQ" if "awq" in model_name.lower() else None,
+            revision=revision,
+            dtype=dtype
         )
         self.sampling_params = SamplingParams(
             temperature=self.temperature, max_tokens=self.max_tokens
@@ -81,6 +86,9 @@ class HFLM_transformers(LM):
         ).cuda()
         self.llm.eval()
     
+    def get_tokenizer(self):
+        return self.tokenizer
+
     def encode(self, text):
         encoded = self.tokenizer.encode(
             text,
@@ -90,16 +98,16 @@ class HFLM_transformers(LM):
         return encoded
 
     def encode_pair(self, context, continuation):
-        whole_encoded = self.encode(context + continuation)[0]
-        context_encoded = self.encode(context)[0]
-        context_encoded_len = len(context_encoded)
-        continuation_encoded = whole_encoded[context_encoded_len:]
+        whole_encoded = self.encode(context + continuation)
+        context_encoded = self.encode(context)
+        context_encoded_len = context_encoded.shape[1]
+        continuation_encoded = whole_encoded[:, context_encoded_len:]
         return context_encoded, continuation_encoded
     
     def generate(self, prompts, choice_nums):
         with torch.no_grad():
             answers = []
-            pgbr = tqdm(len(prompts))
+            pgbr = tqdm(range(len(prompts)))
             for prompt, choice_num in zip(prompts, choice_nums):
                 logits = []
                 for i in range(choice_num):
@@ -108,19 +116,19 @@ class HFLM_transformers(LM):
                         prompt, 
                         choice
                     )
-                    choice_encoded_len = len(choice_encoded)
-                    logit = self.llm(prompt_encoded[:-1].cuda())["logits"]
+                    choice_encoded_len = choice_encoded.shape[1]
+                    logit = self.llm(prompt_encoded[:, :-1].cuda())["logits"]
                     logit = F.log_softmax(logit, dim=-1).cpu()
                     choice_logit = torch.gather(
-                        logit[-choice_encoded_len:], 
-                        1, 
+                        logit[:, -choice_encoded_len:], 
+                        2, 
                         choice_encoded.unsqueeze(-1)
                     ).squeeze(dim=-1)
                     logits.append(choice_logit.sum())
 
                 logits = torch.stack(logits)
                 answer = torch.argmax(logits)
-                answers.append(chr(int(answer) + ord('A')))
+                answers.append(chr(int(answer) + ord('A'))+")")
                 pgbr.update()
         return answers
 
