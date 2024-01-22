@@ -79,6 +79,7 @@ class HFLM_transformers(LM):
             model_name,
             revision=revision
         )
+        self.tokenizer.truncation_side = 'left'
         self.llm = AutoModelForCausalLM.from_pretrained(
             model_name,
             revision=revision,
@@ -93,6 +94,7 @@ class HFLM_transformers(LM):
         encoded = self.tokenizer.encode(
             text,
             add_special_tokens=False,
+            truncation=True,
             return_tensors="pt"
         )
         return encoded

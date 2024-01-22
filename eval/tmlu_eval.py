@@ -81,10 +81,10 @@ def parse_args():
         "--dtype", type=str, default=None, help="The dtype of the model."
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.0, help="Sampling temperature"
+        "--temperature", type=float, default=0.0, help="Sampling temperature."
     )
     parser.add_argument(
-        "--max_tokens", type=int, default=128, help="Max tokens for generation"
+        "--max_tokens", type=int, default=128, help="Max new tokens to generate for generation based evalutaion."
     )
     parser.add_argument(
         "--subsets", type=str, default='ALL', help="The subsets of TMLU (splited by comma). Default is 'ALL'."
@@ -93,10 +93,13 @@ def parse_args():
         "--base_url", type=str, default=None, help="The base url for OpenAI python API library."
     )
     parser.add_argument(
-        "--tensor_parallel_size", type=int, default=1, help="Tensor parallel size"
+        "--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vllm."
     )
     parser.add_argument(
-        "--use_logits", action='store_true', default=False, help="Choose the answer base on the logits of each choice."
+        "--prob_based", action='store_true', default=False, help="Choose to use probability based evalutaion."
+    )
+    parser.add_argument(
+        "--log_dir", type=str, default=None, help="Directory for saving evaluation log."
     )
     
     return parser.parse_args()
@@ -169,7 +172,7 @@ if __name__ == "__main__":
 
     is_openai_chat_model = args.model in OPENAI_MODELS or args.base_url
     is_anthropic_chat_model = args.model in ANTHROPIC_MODELS
-    assert not ((is_openai_chat_model or is_anthropic_chat_model) and args.use_logits), "API based model doesn't support evaluation based on logits."
+    assert not ((is_openai_chat_model or is_anthropic_chat_model) and args.prob_based), "API based model doesn't support evaluation based on logits."
 
 
     if is_openai_chat_model:
@@ -189,7 +192,7 @@ if __name__ == "__main__":
             args.temperature, 
             api_key
         )
-    elif args.use_logits:
+    elif args.prob_based:
         model = HFLM_transformers(
             args.model,
             args.max_tokens,
@@ -220,11 +223,15 @@ if __name__ == "__main__":
             assert(subset in SUBSETS), f"{subset} is not an available subset of TMLU."    
 
     results = {}
-    if args.use_logits:
-        log_root = os.path.join("log", f"{args.model.replace('/', '_')}_logits")
+    if args.log_dir:
+        log_root = args.log_dir
     else:
-        log_root = os.path.join("log", args.model.replace("/", "_"))
+        if args.prob_based:
+            log_root = os.path.join("log", f"{args.model.replace('/', '_')}_logits")
+        else:
+            log_root = os.path.join("log", args.model.replace("/", "_"))
     os.makedirs(log_root, exist_ok=True)
+
     for subset_name in subsets:
         logging.info(f"Evaluating {subset_name}")
         test_data = load_dataset(
@@ -255,7 +262,7 @@ if __name__ == "__main__":
                 }
             )
             outputs = model.generate(test_data["prompt"], prefill="正確答案：(")
-        elif args.use_logits:
+        elif args.prob_based:
             test_data = test_data.map(
                 format_problem, 
                 fn_kwargs={
