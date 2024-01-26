@@ -102,7 +102,19 @@ def parse_args():
         "--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vllm."
     )
     parser.add_argument(
+        "--log_dir", type=str, default=None, help="Directory for saving evaluation log."
+    )
+    parser.add_argument(
+        "--overwrite_log_dir", action="store_true", help="Overwrite logs in the directory."
+    )
+    parser.add_argument(
         "--few_shot_num", type=int, default=5, help="The number for few shot example. Range: [0, 5]"
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=20.0, help="Timeout for API based backend."
+    )
+    parser.add_argument(
+        "--max_retries", type=int, default=100, help="Max retries for API based backend."
     )
     
     return parser.parse_args()
@@ -178,36 +190,42 @@ if __name__ == "__main__":
     if args.backend == 'openai':
         api_key = os.environ.get("OPENAI_API_KEY")
         model = OpenAI_LM(
-            args.model, 
-            args.max_tokens, 
-            args.temperature,
-            api_key,
-            args.base_url
+            model_name=args.model, 
+            max_tokens=args.max_tokens, 
+            temperature=args.temperature,
+            api_key=api_key,
+            base_url=args.base_url,
+            timeout=args.timeout,
+            max_retries=args.max_retries
         )
     elif args.backend == 'anthropic':
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         model = Anthropic_LM(
-            args.model, 
-            args.max_tokens, 
-            args.temperature, 
-            api_key
+            model_name=args.model, 
+            max_tokens=args.max_tokens, 
+            temperature=args.temperature, 
+            api_key=api_key,
+            timeout=args.timeout,
+            max_retries=args.max_retries
         )
     elif args.backend == 'custom_api':
         api_key = "EMPTY"
         model = OpenAI_LM(
-            args.model, 
-            args.max_tokens, 
-            args.temperature,
-            api_key,
-            args.base_url
+            model_name=args.model, 
+            max_tokens=args.max_tokens, 
+            temperature=args.temperature,
+            api_key=api_key,
+            base_url=args.base_url,
+            timeout=args.timeout,
+            max_retries=args.max_retries
         )
     elif args.backend == 'hf':
         model = HFLM_transformers(
-            args.model,
-            args.max_tokens,
-            args.temperature,
-            args.revision,
-            args.dtype
+            model_name=args.model,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            revision=args.revision,
+            dtype=args.dtype
         )
         tokenizer = model.get_tokenizer()
     else:
@@ -216,12 +234,12 @@ if __name__ == "__main__":
             revision=args.revision
         )
         model = HFLM_vLLM(
-            args.model, 
-            args.tensor_parallel_size,
-            args.max_tokens,
-            args.temperature,
-            args.revision,
-            args.dtype
+            model_name=args.model, 
+            tensor_parallel_size=args.tensor_parallel_size,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            revision=args.revision,
+            dtype=args.dtype
         )
 
     if args.subsets == "ALL":
@@ -235,7 +253,7 @@ if __name__ == "__main__":
     if args.log_dir:
         log_root = args.log_dir
     else:
-        if args.prob_based:
+        if args.backend == "hf":
             log_root = os.path.join("log", f"{args.model.replace('/', '_')}_logits")
         else:
             log_root = os.path.join("log", args.model.replace("/", "_"))
@@ -253,6 +271,20 @@ if __name__ == "__main__":
             subset_name, 
             split="dev",
         )
+
+        past_scores = []
+        past_ids = set()
+        if os.path.isfile(os.path.join(log_root, f"{subset_name}_out.jsonl")) and not args.overwrite_log_dir:
+            with open(os.path.join(log_root, f"{subset_name}_out.jsonl"), "r") as f:
+                lines = f.readlines()
+                for line in lines:
+                    example = json.loads(line)
+                    past_ids.add(example["id"])
+                    score = 1 if check_ans(example["full_response"], example["gold_answer"]) else 0
+                    past_scores.append(score)
+            
+            test_data = test_data.filter(lambda example: not example["id"] in past_ids)
+        
         if args.backend == 'openai' or args.backend == 'custom_api':
             test_data = test_data.map(
                 format_problem, 
@@ -262,7 +294,7 @@ if __name__ == "__main__":
                     "few_shot_num": args.few_shot_num
                 }
             )
-            outputs = model.generate(test_data["prompt"])
+            outputs = model.generate(test_data)
         elif args.backend == 'anthropic':
             test_data = test_data.map(
                 format_problem, 
@@ -272,7 +304,7 @@ if __name__ == "__main__":
                     "few_shot_num": args.few_shot_num
                 }
             )
-            outputs = model.generate(test_data["prompt"], prefill="正確答案：(")
+            outputs = model.generate(test_data, prefill="正確答案：(")
         elif args.backend == 'hf':
             test_data = test_data.map(
                 format_problem, 
@@ -291,7 +323,7 @@ if __name__ == "__main__":
                     ) + "\n正確答案：("
                 }
             )
-            outputs = model.generate(test_data["prompt"], test_data["choice_num"])
+            outputs = model.generate(test_data)
         else:
             test_data = test_data.map(
                 format_problem, 
@@ -310,20 +342,23 @@ if __name__ == "__main__":
                     ) + "\n正確答案：("
                 }
             )
-            outputs = model.generate(test_data["prompt"])
-        scores = [
-            1 if check_ans(output, row["answer"]) else 0 for output, row in zip(outputs, test_data)
-        ]
-        avg_score = sum(scores) / len(scores)
-        results[subset_name] = avg_score
-        with open(os.path.join(log_root, f"{subset_name}_out.jsonl"), "w") as f:
-            for output, row in zip(outputs, test_data):
+            outputs = model.generate(test_data)
+        
+        with open(os.path.join(log_root, f"{subset_name}_out.jsonl"), "a") as f:
+            for i in range(len(outputs)):
                 line = {
-                    "id": row["id"],
-                    "prompt": row["prompt"],
-                    "full_response": output,
-                    "gold_answer": row["answer"]
+                    "id": test_data[i]["id"],
+                    "prompt": test_data[i]["prompt"],
+                    "full_response": outputs[i],
+                    "gold_answer": test_data[i]["answer"]
                 }
                 f.write(json.dumps(line, ensure_ascii=False)+"\n")
 
+        assert len(outputs) == len(test_data), f"Error occurs when evaluating {subset_name}"
+        scores = [
+            1 if check_ans(output, row["answer"]) else 0 for output, row in zip(outputs, test_data)
+        ]
+        scores += past_scores
+        avg_score = sum(scores) / len(scores)
+        results[subset_name] = avg_score
     pprint(results)

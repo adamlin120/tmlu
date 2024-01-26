@@ -3,12 +3,14 @@ from abc import abstractmethod
 from typing import List, Optional, Union
 from vllm import LLM, SamplingParams
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
-from openai import OpenAI
-from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
+from openai import OpenAI, APIError as OpenAI_APIError
+from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT, APIError as Anthropic_APIError
 from tqdm import tqdm
 import transformers
 import torch
 import torch.nn.functional as F
+import logging
+logger = logging.getLogger(__name__)
 
 def _get_dtype(
     dtype: Union[str, torch.dtype], config: Optional[transformers.AutoConfig] = None
@@ -55,8 +57,8 @@ class HFLM_vLLM(LM):
             temperature=self.temperature, max_tokens=self.max_tokens
         )
 
-    def generate(self, prompts):
-        outputs = self.llm.generate(prompts, self.sampling_params)
+    def generate(self, dataset):
+        outputs = self.llm.generate(dataset["prompt"], self.sampling_params)
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         answers = [outputs[i].outputs[0].text for i in range(len(outputs))]
         return answers
@@ -107,16 +109,15 @@ class HFLM_transformers(LM):
         context_enc = context_enc[:, -(self.model_max_length - conti_enc_len):]
         return context_enc, conti_enc
     
-    def generate(self, prompts, choice_nums):
+    def generate(self, dataset):
         with torch.no_grad():
             answers = []
-            pgbr = tqdm(range(len(prompts)))
-            for prompt, choice_num in zip(prompts, choice_nums):
+            for example in tqdm(dataset):
                 logits = []
-                for i in range(choice_num):
+                for i in range(example["choice_num"]):
                     choice = chr(i + ord('A'))
                     prompt_encoded, choice_encoded = self.encode_pair(
-                        prompt, 
+                        example["prompt"], 
                         choice
                     )
                     choice_encoded_len = choice_encoded.shape[1]
@@ -132,7 +133,6 @@ class HFLM_transformers(LM):
                 logits = torch.stack(logits)
                 answer = torch.argmax(logits)
                 answers.append(chr(int(answer) + ord('A'))+")")
-                pgbr.update()
         return answers
 
 class OpenAI_LM(LM):
@@ -142,15 +142,17 @@ class OpenAI_LM(LM):
             max_tokens, 
             temperature,
             api_key,
-            base_url=None
+            base_url=None,
+            timeout=20.0,
+            max_retries=100
         ):
         super().__init__(max_tokens, temperature)
 
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=20.0,
-            max_retries=100
+            timeout=timeout,
+            max_retries=max_retries
         )
         self.model = model_name
 
@@ -167,11 +169,15 @@ class OpenAI_LM(LM):
         answer = response.choices[0].message.content
         return answer
 
-    def generate(self, prompts, prefill=""):
+    def generate(self, dataset, prefill=""):
         answers = []
-        for prompt in tqdm(prompts):
-            answer = self.query(prompt, prefill)
-            answers.append(answer)
+        for example in tqdm(dataset):
+            try:
+                answer = self.query(example['prompt'], prefill)
+                answers.append(answer)
+            except OpenAI_APIError as e:
+                logger.error(e.message)
+                break
         return answers
     
 class Anthropic_LM(LM):
@@ -181,12 +187,14 @@ class Anthropic_LM(LM):
             max_tokens, 
             temperature,
             api_key,
+            timeout=20.0,
+            max_retries=100
         ):
         super().__init__(max_tokens, temperature)
         self.client = Anthropic(
             api_key=api_key,
-            timeout=20.0,
-            max_retries=100
+            timeout=timeout,
+            max_retries=max_retries
         )
         self.model = model_name
 
@@ -200,9 +208,13 @@ class Anthropic_LM(LM):
         answer = response.completion
         return answer
 
-    def generate(self, prompts, prefill=""):
+    def generate(self, dataset, prefill=""):
         answers = []
-        for prompt in tqdm(prompts):
-            answer = self.query(prompt, prefill)
-            answers.append(answer)
+        for example in tqdm(dataset):
+            try:
+                answer = self.query(example['prompt'], prefill)
+                answers.append(answer)
+            except Anthropic_APIError as e:
+                logger.error(e.message)
+                break
         return answers
