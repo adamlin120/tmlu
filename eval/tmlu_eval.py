@@ -69,10 +69,16 @@ ANTHROPIC_MODELS = {
 def parse_args():
     parser = argparse.ArgumentParser(description="Run TMLU-Eval")
     parser.add_argument(
+        "--backend",
+        choices=['hf', 'vllm', 'openai', 'anthropic', 'custom_api'],
+        required=True,
+        help="The backend type. Options: ['hf', 'vllm', 'openai', 'anthropic', 'custom_api']"
+    )
+    parser.add_argument(
         "--model",
         type=str,
-        default="yentinglin/Taiwan-LLM-7B-v2.1-chat",
-        help="Model name",
+        required=True,
+        help="Model name.",
     )
     parser.add_argument(
         "--revision", type=str, default=None, help="The revision of the huggingface model."
@@ -96,10 +102,7 @@ def parse_args():
         "--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vllm."
     )
     parser.add_argument(
-        "--prob_based", action='store_true', default=False, help="Choose to use probability based evalutaion."
-    )
-    parser.add_argument(
-        "--log_dir", type=str, default=None, help="Directory for saving evaluation log."
+        "--few_shot_num", type=int, default=5, help="The number for few shot example. Range: [0, 5]"
     )
     
     return parser.parse_args()
@@ -128,12 +131,14 @@ def format_problem(
         example: Dict[str, str], 
         model_template: Callable,
         topic_line: str ="以下選擇題為出自臺灣的考題，答案為其中一個選項。",
-        fewshot_examples: List[Dict[str, str]] = None,
+        few_shot_examples: List[Dict[str, str]] = None,
+        few_shot_num: int = 0,
     ) -> Tuple[str, List[str]]:
     question, choices, answer = parse_example(example)
     prompt = topic_line + "\n\n"
-    if fewshot_examples:
-        for fs_ex in fewshot_examples:
+    if few_shot_examples and few_shot_num:
+        for i in range(few_shot_num):
+            fs_ex = few_shot_examples[i]
             fs_ex_question, fs_ex_choices, fs_ex_answer = parse_example(fs_ex)
             fs_ex_prompt = model_template(fs_ex_question, fs_ex_choices, fs_ex_answer)
             prompt += fs_ex_prompt + "\n\n"
@@ -170,13 +175,8 @@ def check_ans(raw_response: str, answer: List[str]):
 if __name__ == "__main__":
     args = parse_args()
 
-    is_openai_chat_model = args.model in OPENAI_MODELS or args.base_url
-    is_anthropic_chat_model = args.model in ANTHROPIC_MODELS
-    assert not ((is_openai_chat_model or is_anthropic_chat_model) and args.prob_based), "API based model doesn't support evaluation based on logits."
-
-
-    if is_openai_chat_model:
-        api_key=config[args.model]["api_key"]
+    if args.backend == 'openai':
+        api_key = os.environ.get("OPENAI_API_KEY")
         model = OpenAI_LM(
             args.model, 
             args.max_tokens, 
@@ -184,15 +184,24 @@ if __name__ == "__main__":
             api_key,
             args.base_url
         )
-    elif is_anthropic_chat_model:
-        api_key=config[args.model]["api_key"]
+    elif args.backend == 'anthropic':
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
         model = Anthropic_LM(
             args.model, 
             args.max_tokens, 
             args.temperature, 
             api_key
         )
-    elif args.prob_based:
+    elif args.backend == 'custom_api':
+        api_key = "EMPTY"
+        model = OpenAI_LM(
+            args.model, 
+            args.max_tokens, 
+            args.temperature,
+            api_key,
+            args.base_url
+        )
+    elif args.backend == 'hf':
         model = HFLM_transformers(
             args.model,
             args.max_tokens,
@@ -244,30 +253,33 @@ if __name__ == "__main__":
             subset_name, 
             split="dev",
         )
-        if is_openai_chat_model:
+        if args.backend == 'openai' or args.backend == 'custom_api':
             test_data = test_data.map(
                 format_problem, 
                 fn_kwargs={
                     "model_template": openai_template,
-                    "fewshot_examples" : fs_data,
+                    "few_shot_examples" : fs_data,
+                    "few_shot_num": args.few_shot_num
                 }
             )
             outputs = model.generate(test_data["prompt"])
-        elif is_anthropic_chat_model:
+        elif args.backend == 'anthropic':
             test_data = test_data.map(
                 format_problem, 
                 fn_kwargs={
                     "model_template": anthropic_template,
-                    "fewshot_examples" : fs_data,
+                    "few_shot_examples" : fs_data,
+                    "few_shot_num": args.few_shot_num
                 }
             )
             outputs = model.generate(test_data["prompt"], prefill="正確答案：(")
-        elif args.prob_based:
+        elif args.backend == 'hf':
             test_data = test_data.map(
                 format_problem, 
                 fn_kwargs={
                     "model_template": hf_template,
-                    "fewshot_examples" : fs_data,
+                    "few_shot_examples" : fs_data,
+                    "few_shot_num": args.few_shot_num
                 }
             )
             test_data = test_data.map(
@@ -285,7 +297,8 @@ if __name__ == "__main__":
                 format_problem, 
                 fn_kwargs={
                     "model_template": hf_template,
-                    "fewshot_examples" : fs_data,
+                    "few_shot_examples" : fs_data,
+                    "few_shot_num": args.few_shot_num
                 }
             )
             test_data = test_data.map(
