@@ -56,16 +56,6 @@ SUBSETS = [
     'accountant'
 ]
 
-OPENAI_MODELS = {
-    "gpt-4-1106-preview",
-    "gpt-3.5-turbo-1106",
-}
-
-ANTHROPIC_MODELS = {
-    "claude-2.0",
-    "claude-instant-1.2",
-}
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Run TMLU-Eval")
     parser.add_argument(
@@ -344,7 +334,12 @@ if __name__ == "__main__":
             )
             outputs = model.generate(test_data)
         
-        with open(os.path.join(log_root, f"{subset_name}_out.jsonl"), "a") as f:
+        if args.overwrite_log_dir:
+            output_file_open_type = "w"
+        else:
+            output_file_open_type = "a"
+
+        with open(os.path.join(log_root, f"{subset_name}_out.jsonl"), output_file_open_type) as f:
             for i in range(len(outputs)):
                 line = {
                     "id": test_data[i]["id"],

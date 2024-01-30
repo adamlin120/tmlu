@@ -121,7 +121,8 @@ class HFLM_transformers(LM):
                         choice
                     )
                     choice_encoded_len = choice_encoded.shape[1]
-                    logit = self.llm(prompt_encoded[:, :-1].cuda())["logits"]
+                    inputs = torch.cat([prompt_encoded, choice_encoded], dim=-1)
+                    logit = self.llm(inputs[:, :-1].cuda())["logits"]
                     logit = F.log_softmax(logit, dim=-1).cpu()
                     choice_logit = torch.gather(
                         logit[:, -choice_encoded_len:], 
