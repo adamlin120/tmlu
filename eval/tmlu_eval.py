@@ -113,20 +113,13 @@ def parse_args():
 def parse_example(example: Dict[str, str]) -> Tuple[str, List[str], List[str]]:
     question = example["question"]
     question = question.replace("\n\n", "\n")
-    correct_choices = example["correct_choices"]
-    incorrect_choices = example["incorrect_choices"]
-    choices: List[Tuple[str, bool]] = []
-    for choice in correct_choices:
-        choices.append((choice, True))
-    for choice in incorrect_choices:
-        choices.append((choice, False))
-    choices.sort()
-
-    answer: List[str] = []
-    for i, choice in enumerate(choices):
-        if choice[1]:
-            answer.append(chr(i + ord("A")))
-    choices = [choice[0] for choice in choices]
+    choices = []
+    for i in range(6):
+        if example[chr(i + ord("A"))] != None:
+            choices.append(example[chr(i + ord("A"))])
+        else:
+            break
+    answer = example["answer"]
     return question, choices, answer
 
 def format_problem(
