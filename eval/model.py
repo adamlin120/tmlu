@@ -45,6 +45,10 @@ class HFLM_vLLM(LM):
         dtype=None
     ):
         super().__init__(max_tokens, temperature)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            revision=revision
+        )
         self.llm = LLM(
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
@@ -57,7 +61,17 @@ class HFLM_vLLM(LM):
             temperature=self.temperature, max_tokens=self.max_tokens
         )
 
-    def generate(self, dataset):
+    def generate(self, dataset, prefill="正確答案：("):
+        dataset = dataset.map(
+            lambda x: {
+                "prompt": self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": x["prompt"]}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                ) + prefill
+            },
+            load_from_cache_file=False,
+        )
         outputs = self.llm.generate(dataset["prompt"], self.sampling_params)
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         answers = [outputs[i].outputs[0].text for i in range(len(outputs))]
@@ -109,27 +123,40 @@ class HFLM_transformers(LM):
         context_enc = context_enc[:, -(self.model_max_length - conti_enc_len):]
         return context_enc, conti_enc
     
-    def generate(self, dataset):
+    def generate(self, dataset, prefill="正確答案：("):
+        dataset = dataset.map(
+            lambda x: {
+                "prompt": self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": x["prompt"]}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                ) + prefill
+            },
+            load_from_cache_file=False,
+        )
         with torch.no_grad():
             answers = []
             for example in tqdm(dataset):
                 logits = []
-                for i in range(example["choice_num"]):
+                for i in range(6):
                     choice = chr(i + ord('A'))
-                    prompt_encoded, choice_encoded = self.encode_pair(
-                        example["prompt"], 
-                        choice
-                    )
-                    choice_encoded_len = choice_encoded.shape[1]
-                    inputs = torch.cat([prompt_encoded, choice_encoded], dim=-1)
-                    logit = self.llm(inputs[:, :-1].cuda())["logits"]
-                    logit = F.log_softmax(logit, dim=-1).cpu()
-                    choice_logit = torch.gather(
-                        logit[:, -choice_encoded_len:], 
-                        2, 
-                        choice_encoded.unsqueeze(-1)
-                    ).squeeze(dim=-1)
-                    logits.append(choice_logit.sum())
+                    if example[choice] != None:
+                        prompt_encoded, choice_encoded = self.encode_pair(
+                            example["prompt"], 
+                            choice
+                        )
+                        choice_encoded_len = choice_encoded.shape[1]
+                        inputs = torch.cat([prompt_encoded, choice_encoded], dim=-1)
+                        logit = self.llm(inputs[:, :-1].cuda())["logits"]
+                        logit = F.log_softmax(logit, dim=-1).cpu()
+                        choice_logit = torch.gather(
+                            logit[:, -choice_encoded_len:], 
+                            2, 
+                            choice_encoded.unsqueeze(-1)
+                        ).squeeze(dim=-1)
+                        logits.append(choice_logit.sum())
+                    else:
+                        break
 
                 logits = torch.stack(logits)
                 answer = torch.argmax(logits)
