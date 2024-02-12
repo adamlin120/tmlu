@@ -281,7 +281,7 @@ if __name__ == "__main__":
                 }
             )
             if args.cot:
-                outputs = model.generate(test_data, prefill="")
+                outputs = model.generate(test_data, prefill="讓我們一步一步思考。\n")
             else:
                 outputs = model.generate(test_data, prefill="正確答案：(")
 
