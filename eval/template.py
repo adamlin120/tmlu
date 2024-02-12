@@ -54,5 +54,5 @@ def anthropic_template(example: Dict[str, str], use_cot: bool = False, include_a
             full_prompt += f"正確答案：({answer})"
     else:
         if use_cot:
-            full_prompt += f"讓我們一步一步思考。\n"
+            full_prompt += f""
     return full_prompt
