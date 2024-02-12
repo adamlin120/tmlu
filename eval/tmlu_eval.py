@@ -51,6 +51,7 @@ SUBSETS = [
     'nutritionist',
     'tour_guide',
     'tour_leader',
+    'taiwan_tourist_resources',
     'clinical_psychologist',
     'teacher_qualification',
     'accountant'
