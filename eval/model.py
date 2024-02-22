@@ -84,8 +84,9 @@ class HFLM_transformers(LM):
         self.llm = AutoModelForCausalLM.from_pretrained(
             model_name,
             revision=revision,
-            torch_dtype=_get_dtype(dtype, self.config)
-        ).cuda()
+            torch_dtype=_get_dtype(dtype, self.config),
+            device_map="auto"
+        )
         self.model_max_length = self.tokenizer.model_max_length
         self.llm.eval()
     
