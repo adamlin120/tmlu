@@ -56,3 +56,19 @@ def anthropic_template(example: Dict[str, str], use_cot: bool = False, include_a
         if use_cot:
             full_prompt += f""
     return full_prompt
+
+def google_template(example: Dict[str, str], use_cot: bool = False, include_ans: bool = False) -> str:
+    question, choices_prompt, answer, cot = parse_example(example)
+    
+    full_prompt = f"問題：{question}\n{choices_prompt}"
+    if include_ans:
+        if use_cot:
+            full_prompt += f"讓我們一步一步思考。\n{cot}\n正確答案：({answer})"
+        else:
+            full_prompt += f"正確答案：({answer})"
+    else:
+        if use_cot:
+            full_prompt += f"讓我們一步一步思考。\n"
+        else:
+            full_prompt += "正確答案：("
+    return full_prompt

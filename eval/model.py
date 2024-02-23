@@ -5,6 +5,8 @@ from vllm import LLM, SamplingParams
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from openai import OpenAI, APIError as OpenAI_APIError
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT, APIError as Anthropic_APIError
+import google.generativeai as genai
+from google.ai import generativelanguage as glm
 from tqdm import tqdm
 import transformers
 import torch
@@ -42,12 +44,15 @@ class HFLM_vLLM(LM):
         max_tokens,
         temperature,
         revision=None,
-        dtype=None
+        dtype=None,
+        cache_dir=None
     ):
         super().__init__(max_tokens, temperature)
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            revision=revision
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
         )
         self.llm = LLM(
             model=model_name,
@@ -55,7 +60,8 @@ class HFLM_vLLM(LM):
             max_num_batched_tokens=40960,
             quantization="AWQ" if "awq" in model_name.lower() else None,
             revision=revision,
-            dtype=dtype
+            dtype=dtype,
+            download_dir=cache_dir
         )
         self.sampling_params = SamplingParams(
             temperature=self.temperature, max_tokens=self.max_tokens
@@ -84,22 +90,30 @@ class HFLM_transformers(LM):
         max_tokens,
         temperature,
         revision=None,
-        dtype=None
+        dtype=None,
+        cache_dir=None
     ):
         super().__init__(max_tokens, temperature)
         self.config = AutoConfig.from_pretrained(
             model_name,
-            revision=revision
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
         )
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            revision=revision
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
         )
         self.llm = AutoModelForCausalLM.from_pretrained(
             model_name,
             revision=revision,
-            torch_dtype=_get_dtype(dtype, self.config)
-        ).cuda()
+            torch_dtype=_get_dtype(dtype, self.config),
+            device_map="auto",
+            cache_dir=cache_dir,
+            trust_remote_code=True,
+        )
         self.model_max_length = self.tokenizer.model_max_length
         self.llm.eval()
     
@@ -244,5 +258,71 @@ class Anthropic_LM(LM):
                 answers.append(answer)
             except Anthropic_APIError as e:
                 logger.error(e.message)
+                break
+        return answers
+    
+class Google_LM(LM):
+    def __init__(
+            self, 
+            model_name, 
+            max_tokens, 
+            temperature,
+            api_key,
+            timeout=20.0,
+            max_retries=100
+        ):
+        super().__init__(max_tokens, temperature)
+        genai.configure(api_key=api_key)
+        generation_config = glm.GenerationConfig(
+            max_output_tokens=max_tokens, 
+            temperature=temperature
+        )
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold" : "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_NONE"
+            }
+        ]
+        self.request_options = {
+            "retry": max_retries,
+            "timeout": timeout
+        }
+        self.client = genai.GenerativeModel(
+            model_name, 
+            generation_config=generation_config,
+            safety_settings=safety_settings
+        )
+    
+    def query(self, prompt, prefill=""):
+        response = self.client.generate_content(
+            f"{prompt}{prefill.strip()}",
+            # request_options=self.request_options
+        )
+        answer = response.text
+        return answer
+    
+    def generate(self, dataset, prefill=""):
+        answers = []
+        for example in tqdm(dataset):
+            for _ in range(self.request_options["retry"]):
+                try:
+                    answer = self.query(example['prompt'], prefill)
+                    answers.append(answer)
+                    break
+                except Exception as e:
+                    logger.error(e)
+            else:
                 break
         return answers

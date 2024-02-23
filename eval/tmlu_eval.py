@@ -1,7 +1,7 @@
 import argparse
 from datasets import load_dataset
 from typing import List, Dict, Tuple, Set, Callable
-from model import HFLM_vLLM, HFLM_transformers, OpenAI_LM, Anthropic_LM
+from model import HFLM_vLLM, HFLM_transformers, OpenAI_LM, Anthropic_LM, Google_LM
 from template import hf_template, openai_template, anthropic_template
 import logging
 from pprint import pprint
@@ -60,15 +60,18 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run TMLU-Eval")
     parser.add_argument(
         "--backend",
-        choices=['hf', 'vllm', 'openai', 'anthropic', 'custom_api'],
+        choices=['hf', 'vllm', 'openai', 'anthropic', 'google', 'custom_api'],
         required=True,
-        help="The backend type. Options: ['hf', 'vllm', 'openai', 'anthropic', 'custom_api']"
+        help="The backend type. Options: ['hf', 'vllm', 'openai', 'anthropic', 'google', 'custom_api']"
     )
     parser.add_argument(
         "--model",
         type=str,
         required=True,
         help="Model name.",
+    )
+    parser.add_argument(
+        "--cache_dir", type=str, default=None, help="The dir to store the pretrained models downloaded from huggingface.co."
     )
     parser.add_argument(
         "--revision", type=str, default=None, help="The revision of the huggingface model."
@@ -178,6 +181,16 @@ if __name__ == "__main__":
             timeout=args.timeout,
             max_retries=args.max_retries
         )
+    elif args.backend == 'google':
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        model = Google_LM(
+            model_name=args.model, 
+            max_tokens=args.max_tokens, 
+            temperature=args.temperature,
+            api_key=api_key,
+            timeout=args.timeout,
+            max_retries=args.max_retries
+        )
     elif args.backend == 'custom_api':
         api_key = "EMPTY"
         model = OpenAI_LM(
@@ -196,7 +209,8 @@ if __name__ == "__main__":
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             revision=args.revision,
-            dtype=args.dtype
+            dtype=args.dtype,
+            cache_dir=args.cache_dir
         )
     else:
         model = HFLM_vLLM(
@@ -205,7 +219,8 @@ if __name__ == "__main__":
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             revision=args.revision,
-            dtype=args.dtype
+            dtype=args.dtype,
+            cache_dir=args.cache_dir
         )
 
     if args.subsets == "ALL":
@@ -284,6 +299,22 @@ if __name__ == "__main__":
                 outputs = model.generate(test_data, prefill="讓我們一步一步思考。\n")
             else:
                 outputs = model.generate(test_data, prefill="正確答案：(")
+
+        elif args.backend == 'google':
+            test_data = test_data.map(
+                format_problem,
+                load_from_cache_file=False, 
+                fn_kwargs={
+                    "model_template": openai_template,
+                    "few_shot_examples" : fs_data,
+                    "few_shot_num": args.few_shot_num,
+                    "cot": args.cot
+                }
+            )
+            if args.cot:
+                outputs = model.generate(test_data, prefill="")
+            else:
+                outputs = model.generate(test_data, prefill="")
 
         elif args.backend == 'hf':
             test_data = test_data.map(
