@@ -327,7 +327,7 @@ if __name__ == "__main__":
                     "cot": args.cot
                 }
             )
-            output = model.generate(test_data, prefill="正確答案：(")
+            outputs = model.generate(test_data, prefill="正確答案：(")
 
         else:
             print(test_data)
@@ -344,7 +344,7 @@ if __name__ == "__main__":
             if args.cot:
                 outputs = model.generate(test_data, prefill="")
             else:
-                output = model.generate(test_data, prefill="正確答案：(")
+                outputs = model.generate(test_data, prefill="正確答案：(")
         
         if args.overwrite_log_dir:
             output_file_open_type = "w"
