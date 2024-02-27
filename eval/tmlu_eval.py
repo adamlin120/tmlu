@@ -8,7 +8,7 @@ from pprint import pprint
 import configparser
 import os
 import json
-
+from utils import check_ans, check_ans_cot
 config = configparser.ConfigParser()
 config.read('config.ini')
 logging.basicConfig(
@@ -134,29 +134,6 @@ def format_problem(
     example["prompt"] = prompt
     return example
 
-def check_ans(raw_response: str, answer: str):
-    def is_ans_format(text: str):
-        if '正確答案' in text:
-            return True
-        elif '不正確' in text:
-            return False
-        elif 'A' in text or 'B' in text or 'C' in text or 'D' in text or 'E' in text:
-            return True
-        else:
-            return False
-    
-    raw_response_split = raw_response.strip().split("\n\n")
-    if len(raw_response_split[0]) < 50 and is_ans_format(raw_response_split[0]):
-        prediction_text = raw_response_split[0]
-    else:
-        prediction_text = raw_response_split[-1]
-    
-    prediction: Set[str] = set()
-    for i in range(6):
-        if f"{chr(ord('A')+i)})" in prediction_text:
-            prediction.add(chr(ord('A')+i))
-    return prediction == set(answer)
-
 if __name__ == "__main__":
     args = parse_args()
 
@@ -242,6 +219,11 @@ if __name__ == "__main__":
             log_root = os.path.join("log", args.model.replace("/", "_"))
     os.makedirs(log_root, exist_ok=True)
 
+    if args.cot:
+        score_func = check_ans_cot
+    else:
+        score_func = check_ans
+
     for subset_name in subsets:
         logging.info(f"Evaluating {subset_name}")
         test_data = load_dataset(
@@ -263,7 +245,7 @@ if __name__ == "__main__":
                 for line in lines:
                     example = json.loads(line)
                     past_ids.add(example["id"])
-                    score = 1 if check_ans(example["full_response"], example["gold_answer"]) else 0
+                    score = 1 if score_func(example["full_response"], example["gold_answer"]) else 0
                     past_scores.append(score)
             
             test_data = test_data.filter(lambda example: not example["id"] in past_ids)
@@ -363,7 +345,7 @@ if __name__ == "__main__":
 
         assert len(outputs) == len(test_data), f"Error occurs when evaluating {subset_name}"
         scores = [
-            1 if check_ans(output, row["answer"]) else 0 for output, row in zip(outputs, test_data)
+            1 if score_func(output, row["answer"]) else 0 for output, row in zip(outputs, test_data)
         ]
         scores += past_scores
         avg_score = sum(scores) / len(scores)
