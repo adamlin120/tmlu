@@ -278,9 +278,9 @@ if __name__ == "__main__":
                 }
             )
             if args.cot:
-                outputs = model.generate(test_data, prefill="讓我們一步一步思考。\n")
+                outputs = model.generate(test_data, prefill="\n讓我們一步一步思考。\n")
             else:
-                outputs = model.generate(test_data, prefill="正確答案：(")
+                outputs = model.generate(test_data, prefill="\n正確答案：(")
 
         elif args.backend == 'google':
             test_data = test_data.map(
@@ -309,10 +309,9 @@ if __name__ == "__main__":
                     "cot": args.cot
                 }
             )
-            outputs = model.generate(test_data, prefill="正確答案：(")
+            outputs = model.generate(test_data, prefill="\n正確答案：(")
 
         else:
-            print(test_data)
             test_data = test_data.map(
                 format_problem,
                 load_from_cache_file=False, 
@@ -324,9 +323,9 @@ if __name__ == "__main__":
                 }
             )
             if args.cot:
-                outputs = model.generate(test_data, prefill="")
+                outputs = model.generate(test_data, prefill="\n讓我們一步一步思考。\n")
             else:
-                outputs = model.generate(test_data, prefill="正確答案：(")
+                outputs = model.generate(test_data, prefill="\n正確答案：(")
         
         if args.overwrite_log_dir:
             output_file_open_type = "w"

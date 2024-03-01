@@ -324,5 +324,5 @@ class Google_LM(LM):
                 except Exception as e:
                     logger.error(e)
             else:
-                break
+                answers.append("")
         return answers

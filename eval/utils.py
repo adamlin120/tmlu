@@ -1,7 +1,9 @@
 from typing import Set
 
 def is_ans_format(text: str):
-        if '正確答案' in text:
+        if '不是正確答案' in text:
+            return False
+        elif '正確答案' in text:
             return True
         elif '不正確' in text:
             return False
@@ -24,7 +26,7 @@ def check_ans(raw_response: str, answer: str):
     return prediction == set(answer)
 
 def check_ans_cot(raw_response: str, answer: str):
-    raw_response_split = raw_response.strip().split("\n")
+    raw_response_split = raw_response.strip().split("問題：")[0].strip().split("\n")
 
     prediction_text = ""
     for i in range(len(raw_response_split)-1, -1, -1):
@@ -33,7 +35,7 @@ def check_ans_cot(raw_response: str, answer: str):
             break
 
     prediction = ""
-    ans_pos = prediction_text.find("正確答案")
+    ans_pos = prediction_text.find("答案")
     if ans_pos != -1:
         for c in prediction_text[ans_pos+4:]:
             if c.isalpha() & c.isascii():
