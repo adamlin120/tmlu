@@ -1,15 +1,14 @@
 import argparse
 from datasets import load_dataset
 from typing import List, Dict, Tuple, Set, Callable
-from transformers import AutoTokenizer
-from model import HFLM_vLLM, HFLM_transformers, OpenAI_LM, Anthropic_LM
+from model import HFLM_vLLM, HFLM_transformers, OpenAI_LM, Anthropic_LM, Google_LM
 from template import hf_template, openai_template, anthropic_template
 import logging
 from pprint import pprint
 import configparser
 import os
 import json
-
+from utils import check_ans, check_ans_cot
 config = configparser.ConfigParser()
 config.read('config.ini')
 logging.basicConfig(
@@ -61,9 +60,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run TMLU-Eval")
     parser.add_argument(
         "--backend",
-        choices=['hf', 'vllm', 'openai', 'anthropic', 'custom_api'],
+        choices=['hf', 'vllm', 'openai', 'anthropic', 'google', 'custom_api'],
         required=True,
-        help="The backend type. Options: ['hf', 'vllm', 'openai', 'anthropic', 'custom_api']"
+        help="The backend type. Options: ['hf', 'vllm', 'openai', 'anthropic', 'google', 'custom_api']"
     )
     parser.add_argument(
         "--model",
@@ -72,10 +71,13 @@ def parse_args():
         help="Model name.",
     )
     parser.add_argument(
+        "--cache_dir", type=str, default=None, help="The dir to store the pretrained models downloaded from huggingface.co."
+    )
+    parser.add_argument(
         "--revision", type=str, default=None, help="The revision of the huggingface model."
     )
     parser.add_argument(
-        "--dtype", type=str, default=None, help="The dtype of the model."
+        "--dtype", type=str, default="bfloat16", help="The dtype of the model."
     )
     parser.add_argument(
         "--temperature", type=float, default=0.0, help="Sampling temperature."
@@ -107,66 +109,30 @@ def parse_args():
     parser.add_argument(
         "--max_retries", type=int, default=100, help="Max retries for API based backend."
     )
-    
+    parser.add_argument(
+        "--cot", action="store_true", help="Use CoT evaluation."
+    )
     return parser.parse_args()
 
 
-def parse_example(example: Dict[str, str]) -> Tuple[str, List[str], List[str]]:
-    question = example["question"]
-    question = question.replace("\n\n", "\n")
-    choices = []
-    for i in range(6):
-        if example[chr(i + ord("A"))] != None:
-            choices.append(example[chr(i + ord("A"))])
-        else:
-            break
-    answer = example["answer"]
-    return question, choices, answer
-
 def format_problem(
-        example: Dict[str, str], 
+        example: Dict[str, str],
         model_template: Callable,
         topic_line: str ="以下選擇題為出自臺灣的考題，答案為其中一個選項。",
         few_shot_examples: List[Dict[str, str]] = None,
         few_shot_num: int = 0,
+        cot: bool = False,
     ) -> Tuple[str, List[str]]:
-    question, choices, answer = parse_example(example)
     prompt = topic_line + "\n\n"
     if few_shot_examples and few_shot_num:
         for i in range(few_shot_num):
             fs_ex = few_shot_examples[i]
-            fs_ex_question, fs_ex_choices, fs_ex_answer = parse_example(fs_ex)
-            fs_ex_prompt = model_template(fs_ex_question, fs_ex_choices, fs_ex_answer)
+            fs_ex_prompt = model_template(fs_ex, use_cot=cot, include_ans=True)
             prompt += fs_ex_prompt + "\n\n"
-    example_prompt = model_template(question, choices)
+    example_prompt = model_template(example, use_cot=cot, include_ans=False)
     prompt += example_prompt
     example["prompt"] = prompt
-    example["answer"] = answer
-    example["choice_num"] = len(choices)
     return example
-
-def check_ans(raw_response: str, answer: List[str]):
-    def is_ans_format(text: str):
-        if '正確答案' in text:
-            return True
-        elif '不正確' in text:
-            return False
-        elif 'A' in text or 'B' in text or 'C' in text or 'D' in text or 'E' in text:
-            return True
-        else:
-            return False
-    
-    raw_response_split = raw_response.strip().split("\n\n")
-    if len(raw_response_split[0]) < 50 and is_ans_format(raw_response_split[0]):
-        prediction_text = raw_response_split[0]
-    else:
-        prediction_text = raw_response_split[-1]
-    
-    prediction: Set[str] = set()
-    for i in range(6):
-        if f"{chr(ord('A')+i)})" in prediction_text:
-            prediction.add(chr(ord('A')+i))
-    return prediction == set(answer)
 
 if __name__ == "__main__":
     args = parse_args()
@@ -192,6 +158,16 @@ if __name__ == "__main__":
             timeout=args.timeout,
             max_retries=args.max_retries
         )
+    elif args.backend == 'google':
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        model = Google_LM(
+            model_name=args.model, 
+            max_tokens=args.max_tokens, 
+            temperature=args.temperature,
+            api_key=api_key,
+            timeout=args.timeout,
+            max_retries=args.max_retries
+        )
     elif args.backend == 'custom_api':
         api_key = "EMPTY"
         model = OpenAI_LM(
@@ -204,26 +180,24 @@ if __name__ == "__main__":
             max_retries=args.max_retries
         )
     elif args.backend == 'hf':
+        assert not args.cot, "CoT evaluation is not supported with HF backend now."
         model = HFLM_transformers(
             model_name=args.model,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             revision=args.revision,
-            dtype=args.dtype
+            dtype=args.dtype,
+            cache_dir=args.cache_dir
         )
-        tokenizer = model.get_tokenizer()
     else:
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model,
-            revision=args.revision
-        )
         model = HFLM_vLLM(
             model_name=args.model, 
             tensor_parallel_size=args.tensor_parallel_size,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             revision=args.revision,
-            dtype=args.dtype
+            dtype=args.dtype,
+            cache_dir=args.cache_dir
         )
 
     if args.subsets == "ALL":
@@ -239,9 +213,16 @@ if __name__ == "__main__":
     else:
         if args.backend == "hf":
             log_root = os.path.join("log", f"{args.model.replace('/', '_')}_logits")
+        elif args.cot:
+            log_root = os.path.join("log", f"{args.model.replace('/', '_')}_cot")
         else:
             log_root = os.path.join("log", args.model.replace("/", "_"))
     os.makedirs(log_root, exist_ok=True)
+
+    if args.cot:
+        score_func = check_ans_cot
+    else:
+        score_func = check_ans
 
     for subset_name in subsets:
         logging.info(f"Evaluating {subset_name}")
@@ -264,69 +245,87 @@ if __name__ == "__main__":
                 for line in lines:
                     example = json.loads(line)
                     past_ids.add(example["id"])
-                    score = 1 if check_ans(example["full_response"], example["gold_answer"]) else 0
+                    score = 1 if score_func(example["full_response"], example["gold_answer"]) else 0
                     past_scores.append(score)
             
             test_data = test_data.filter(lambda example: not example["id"] in past_ids)
         
         if args.backend == 'openai' or args.backend == 'custom_api':
             test_data = test_data.map(
-                format_problem, 
+                format_problem,
+                load_from_cache_file=False, 
                 fn_kwargs={
                     "model_template": openai_template,
                     "few_shot_examples" : fs_data,
-                    "few_shot_num": args.few_shot_num
+                    "few_shot_num": args.few_shot_num,
+                    "cot": args.cot
                 }
             )
-            outputs = model.generate(test_data)
+            if args.cot:
+                outputs = model.generate(test_data, prefill="")
+            else:
+                outputs = model.generate(test_data, prefill="")
+
         elif args.backend == 'anthropic':
             test_data = test_data.map(
-                format_problem, 
+                format_problem,
+                load_from_cache_file=False, 
                 fn_kwargs={
                     "model_template": anthropic_template,
                     "few_shot_examples" : fs_data,
-                    "few_shot_num": args.few_shot_num
+                    "few_shot_num": args.few_shot_num,
+                    "cot": args.cot
                 }
             )
-            outputs = model.generate(test_data, prefill="正確答案：(")
+            if args.cot:
+                outputs = model.generate(test_data, prefill="\n讓我們一步一步思考。\n")
+            else:
+                outputs = model.generate(test_data, prefill="\n正確答案：(")
+
+        elif args.backend == 'google':
+            test_data = test_data.map(
+                format_problem,
+                load_from_cache_file=False, 
+                fn_kwargs={
+                    "model_template": openai_template,
+                    "few_shot_examples" : fs_data,
+                    "few_shot_num": args.few_shot_num,
+                    "cot": args.cot
+                }
+            )
+            if args.cot:
+                outputs = model.generate(test_data, prefill="")
+            else:
+                outputs = model.generate(test_data, prefill="")
+
         elif args.backend == 'hf':
             test_data = test_data.map(
-                format_problem, 
+                format_problem,
+                load_from_cache_file=False,
                 fn_kwargs={
                     "model_template": hf_template,
                     "few_shot_examples" : fs_data,
-                    "few_shot_num": args.few_shot_num
+                    "few_shot_num": args.few_shot_num,
+                    "cot": args.cot
                 }
             )
-            test_data = test_data.map(
-                lambda x: {
-                    "prompt": tokenizer.apply_chat_template(
-                        [{"role": "user", "content": x["prompt"]}],
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    ) + "\n正確答案：("
-                }
-            )
-            outputs = model.generate(test_data)
+            outputs = model.generate(test_data, prefill="\n正確答案：(")
+
         else:
             test_data = test_data.map(
-                format_problem, 
+                format_problem,
+                load_from_cache_file=False, 
                 fn_kwargs={
                     "model_template": hf_template,
                     "few_shot_examples" : fs_data,
-                    "few_shot_num": args.few_shot_num
+                    "few_shot_num": args.few_shot_num,
+                    "cot": args.cot
                 }
             )
-            test_data = test_data.map(
-                lambda x: {
-                    "prompt": tokenizer.apply_chat_template(
-                        [{"role": "user", "content": x["prompt"]}],
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    ) + "\n正確答案：("
-                }
-            )
-            outputs = model.generate(test_data)
+            if args.cot:
+                outputs = model.generate(test_data, prefill="\n讓我們一步一步思考。\n")
+            else:
+                outputs = model.generate(test_data, prefill="\n正確答案：(")
         
         if args.overwrite_log_dir:
             output_file_open_type = "w"
@@ -345,7 +344,7 @@ if __name__ == "__main__":
 
         assert len(outputs) == len(test_data), f"Error occurs when evaluating {subset_name}"
         scores = [
-            1 if check_ans(output, row["answer"]) else 0 for output, row in zip(outputs, test_data)
+            1 if score_func(output, row["answer"]) else 0 for output, row in zip(outputs, test_data)
         ]
         scores += past_scores
         avg_score = sum(scores) / len(scores)

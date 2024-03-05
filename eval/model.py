@@ -5,6 +5,8 @@ from vllm import LLM, SamplingParams
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from openai import OpenAI, APIError as OpenAI_APIError
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT, APIError as Anthropic_APIError
+import google.generativeai as genai
+from google.ai import generativelanguage as glm
 from tqdm import tqdm
 import transformers
 import torch
@@ -42,22 +44,40 @@ class HFLM_vLLM(LM):
         max_tokens,
         temperature,
         revision=None,
-        dtype=None
+        dtype=None,
+        cache_dir=None
     ):
         super().__init__(max_tokens, temperature)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
+        )
         self.llm = LLM(
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
             max_num_batched_tokens=40960,
             quantization="AWQ" if "awq" in model_name.lower() else None,
             revision=revision,
-            dtype=dtype
+            dtype=dtype,
+            download_dir=cache_dir
         )
         self.sampling_params = SamplingParams(
             temperature=self.temperature, max_tokens=self.max_tokens
         )
 
-    def generate(self, dataset):
+    def generate(self, dataset, prefill="正確答案：("):
+        dataset = dataset.map(
+            lambda x: {
+                "prompt": self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": x["prompt"]}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                ) + prefill
+            },
+            load_from_cache_file=False,
+        )
         outputs = self.llm.generate(dataset["prompt"], self.sampling_params)
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         answers = [outputs[i].outputs[0].text for i in range(len(outputs))]
@@ -70,22 +90,29 @@ class HFLM_transformers(LM):
         max_tokens,
         temperature,
         revision=None,
-        dtype=None
+        dtype=None,
+        cache_dir=None
     ):
         super().__init__(max_tokens, temperature)
         self.config = AutoConfig.from_pretrained(
             model_name,
-            revision=revision
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
         )
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            revision=revision
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
         )
         self.llm = AutoModelForCausalLM.from_pretrained(
             model_name,
             revision=revision,
             torch_dtype=_get_dtype(dtype, self.config),
-            device_map="auto"
+            device_map="auto",
+            cache_dir=cache_dir,
+            trust_remote_code=True,
         )
         self.model_max_length = self.tokenizer.model_max_length
         self.llm.eval()
@@ -110,27 +137,40 @@ class HFLM_transformers(LM):
         context_enc = context_enc[:, -(self.model_max_length - conti_enc_len):]
         return context_enc, conti_enc
     
-    def generate(self, dataset):
+    def generate(self, dataset, prefill="正確答案：("):
+        dataset = dataset.map(
+            lambda x: {
+                "prompt": self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": x["prompt"]}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                ) + prefill
+            },
+            load_from_cache_file=False,
+        )
         with torch.no_grad():
             answers = []
             for example in tqdm(dataset):
                 logits = []
-                for i in range(example["choice_num"]):
+                for i in range(6):
                     choice = chr(i + ord('A'))
-                    prompt_encoded, choice_encoded = self.encode_pair(
-                        example["prompt"], 
-                        choice
-                    )
-                    choice_encoded_len = choice_encoded.shape[1]
-                    inputs = torch.cat([prompt_encoded, choice_encoded], dim=-1)
-                    logit = self.llm(inputs[:, :-1].cuda())["logits"]
-                    logit = F.log_softmax(logit, dim=-1).cpu()
-                    choice_logit = torch.gather(
-                        logit[:, -choice_encoded_len:], 
-                        2, 
-                        choice_encoded.unsqueeze(-1)
-                    ).squeeze(dim=-1)
-                    logits.append(choice_logit.sum())
+                    if example[choice] != None:
+                        prompt_encoded, choice_encoded = self.encode_pair(
+                            example["prompt"], 
+                            choice
+                        )
+                        choice_encoded_len = choice_encoded.shape[1]
+                        inputs = torch.cat([prompt_encoded, choice_encoded], dim=-1)
+                        logit = self.llm(inputs[:, :-1].cuda())["logits"]
+                        logit = F.log_softmax(logit, dim=-1).cpu()
+                        choice_logit = torch.gather(
+                            logit[:, -choice_encoded_len:], 
+                            2, 
+                            choice_encoded.unsqueeze(-1)
+                        ).squeeze(dim=-1)
+                        logits.append(choice_logit.sum())
+                    else:
+                        break
 
                 logits = torch.stack(logits)
                 answer = torch.argmax(logits)
@@ -219,4 +259,70 @@ class Anthropic_LM(LM):
             except Anthropic_APIError as e:
                 logger.error(e.message)
                 break
+        return answers
+    
+class Google_LM(LM):
+    def __init__(
+            self, 
+            model_name, 
+            max_tokens, 
+            temperature,
+            api_key,
+            timeout=20.0,
+            max_retries=100
+        ):
+        super().__init__(max_tokens, temperature)
+        genai.configure(api_key=api_key)
+        generation_config = glm.GenerationConfig(
+            max_output_tokens=max_tokens, 
+            temperature=temperature
+        )
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold" : "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_NONE"
+            }
+        ]
+        self.request_options = {
+            "retry": max_retries,
+            "timeout": timeout
+        }
+        self.client = genai.GenerativeModel(
+            model_name, 
+            generation_config=generation_config,
+            safety_settings=safety_settings
+        )
+    
+    def query(self, prompt, prefill=""):
+        response = self.client.generate_content(
+            f"{prompt}{prefill.strip()}",
+            # request_options=self.request_options
+        )
+        answer = response.text
+        return answer
+    
+    def generate(self, dataset, prefill=""):
+        answers = []
+        for example in tqdm(dataset):
+            for _ in range(self.request_options["retry"]):
+                try:
+                    answer = self.query(example['prompt'], prefill)
+                    answers.append(answer)
+                    break
+                except Exception as e:
+                    logger.error(e)
+            else:
+                answers.append("")
         return answers
