@@ -1,4 +1,17 @@
-from typing import Set
+import re
+
+def find_choice(text):
+    pattern = re.compile(r'[A-F]\)')
+    match = pattern.search(text)
+    if match:
+        return match.start()
+    else:
+        pattern = re.compile(r'[A-F]')
+        match = pattern.search(text)
+        if match:
+            return match.start()
+        else:
+            return -1
 
 def is_ans_format(text: str):
         if '不是正確答案' in text:
@@ -7,6 +20,8 @@ def is_ans_format(text: str):
             return True
         elif '不正確' in text:
             return False
+        elif '正確' in text:
+            return True
         elif 'A' in text or 'B' in text or 'C' in text or 'D' in text or 'E' in text:
             return True
         else:
@@ -14,16 +29,16 @@ def is_ans_format(text: str):
 
 def check_ans(raw_response: str, answer: str):
     raw_response_split = raw_response.strip().split("\n\n")
-    if len(raw_response_split[0]) < 50 and is_ans_format(raw_response_split[0]):
+    if is_ans_format(raw_response_split[0]):
         prediction_text = raw_response_split[0]
     else:
         prediction_text = raw_response_split[-1]
     
-    prediction: Set[str] = set()
-    for i in range(6):
-        if f"{chr(ord('A')+i)})" in prediction_text:
-            prediction.add(chr(ord('A')+i))
-    return prediction == set(answer)
+    choice_pos = find_choice(prediction_text)
+    if choice_pos == -1:
+        return False
+    else:
+        return prediction_text[choice_pos] == answer
 
 def check_ans_cot(raw_response: str, answer: str):
     raw_response_split = raw_response.strip().split("問題：")[0].strip().split("\n")
@@ -31,15 +46,12 @@ def check_ans_cot(raw_response: str, answer: str):
     prediction_text = ""
     for i in range(len(raw_response_split)-1, -1, -1):
         if is_ans_format(raw_response_split[i]):
-            prediction_text = raw_response_split[i]
+            prediction_text = "".join(raw_response_split[i:])
             break
 
-    prediction = ""
-    ans_pos = prediction_text.find("答案")
-    if ans_pos != -1:
-        for c in prediction_text[ans_pos+4:]:
-            if c.isalpha() & c.isascii():
-                prediction = c
-                break
-    
-    return prediction == answer
+    ans_pos = max(prediction_text.find("正確答案"), 0)
+    choice_pos = find_choice(prediction_text[ans_pos:])
+    if choice_pos == -1:
+        return False
+    else:
+        return prediction_text[ans_pos+choice_pos] == answer
