@@ -14,18 +14,18 @@ def find_choice(text):
             return -1
 
 def is_ans_format(text: str):
-        if '不是正確答案' in text:
-            return False
-        elif '正確答案' in text:
-            return True
-        elif '不正確' in text:
-            return False
-        elif '正確' in text:
-            return True
-        elif 'A' in text or 'B' in text or 'C' in text or 'D' in text or 'E' in text:
-            return True
-        else:
-            return False
+    if '不是正確答案' in text:
+        return False
+    elif '正確答案' in text:
+        return True
+    elif '不正確' in text:
+        return False
+    elif '正確' in text:
+        return True
+    elif 'A' in text or 'B' in text or 'C' in text or 'D' in text or 'E' in text:
+        return True
+    else:
+        return False
 
 def check_ans(raw_response: str, answer: str):
     raw_response_split = raw_response.strip().split("\n\n")
