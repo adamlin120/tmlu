@@ -241,13 +241,16 @@ class Anthropic_LM(LM):
         self.model = model_name
 
     def query(self, prompt, prefill=""):
-        response = self.client.completions.create(
+        response = self.client.messages.create(
             model=self.model,
-            max_tokens_to_sample=self.max_tokens,
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": prefill.strip()},
+            ],
+            max_tokens=self.max_tokens,
             temperature=self.temperature,
-            prompt=f"{HUMAN_PROMPT} {prompt}{AI_PROMPT}{prefill.strip()}",
         )
-        answer = response.completion
+        answer = response.content[0].text
         return answer
 
     def generate(self, dataset, prefill=""):
@@ -324,5 +327,5 @@ class Google_LM(LM):
                 except Exception as e:
                     logger.error(e)
             else:
-                answers.append("")
+                break
         return answers
