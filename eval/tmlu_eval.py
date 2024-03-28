@@ -104,7 +104,7 @@ def parse_args():
         "--overwrite_log_dir", action="store_true", help="Overwrite logs in the directory."
     )
     parser.add_argument(
-        "--few_shot_num", type=int, default=5, help="The number for few shot example. Range: [0, 5]"
+        "--few_shot_num", type=int, default=5, help="The number for few shot example. Range: [0, 5]. Default is 5."
     )
     parser.add_argument(
         "--timeout", type=float, default=20.0, help="Timeout for API based backend."

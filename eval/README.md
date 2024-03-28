@@ -1,5 +1,19 @@
 # TMLU Eval
 
+For open source models, we support 
+
+* Hugging-Face as backend 
+  * Use the probabilities of the option codes as prediction
+* vLLM as backend
+  * Parse the model generation to extract the prediction
+
+For proprietary models, we support
+
+* OpenAI API
+  * Including custom API server which support **[openai-python](https://github.com/openai/openai-python)**
+* Anthropic API
+* Google API
+
 ## Hugging Face
 
 Use the probabilities of the option codes as prediction.
@@ -11,9 +25,9 @@ $python3 tmlu_eval.py \
 	--backend hf \
 	--model [Model name on huggingface or path] \
 	--dtype [torch type for the model, default will follow the model config] \
-	--temperature [TEMPERATURE] \
 	--subsets [Choose subsets of TMLU (names splited by comma) for evalutaion. Default is 'ALL'] \
-	--log_dir [Directory for saving evaluation log]
+	--log_dir [Directory for saving evaluation log] \
+	--few_shot_num [The number for few shot example. Range: [0, 5]. Default is 5.]
 ```
 
 ### Example:
@@ -25,12 +39,13 @@ $python3 tmlu_eval.py \
 	--dtype float16 \
 	--temperature 0.0 \
 	--subsets AST_chinese,AST_mathematics \
-	--log_dir log/prob_based/Taiwan-LLM-7B-v2.1-chat
+	--log_dir log/prob_based/Taiwan-LLM-7B-v2.1-chat \
+	--few_shot_num 5
 ```
 
 ## vLLM
 
-Use the model generate as the prediction.
+Parse the model generation to extract the prediction.
 
 ### Command:
 
@@ -43,7 +58,9 @@ $python3 tmlu_eval.py \
 	--max_tokens [max new tokens to generate] \
 	--subsets [Choose subsets of TMLU (names splited by comma) for evalutaion. Default is 'ALL']  \
 	--tensor_parallel_size [Tensor parallel size for vLLM] \
-	--log_dir [Directory for saving evaluation log]
+	--log_dir [Directory for saving evaluation log] \
+	--few_shot_num [The number for few shot example. Range: [0, 5]. Default is 5.] \
+	--cot [Use CoT evaluation.]
 ```
 
 ### Example:
@@ -57,12 +74,14 @@ $python3 tmlu_eval.py \
 	--max_tokens 128 \
 	--subsets AST_chinese,AST_mathematics \
 	--tensor_parallel_size 1 \
-	--log_dir log/gen_based/Taiwan-LLM-7B-v2.1-chat
+	--log_dir log/gen_based/Taiwan-LLM-7B-v2.1-chat \
+	--few_shot_num 5 \
+	--cot
 ```
 
-## Custom API model (use OpenAI-python for querying)
+## Custom API model (use **[openai-python](https://github.com/openai/openai-python)** for querying)
 
-Use the model generate as the prediction.
+Parse the model generation to extract the prediction.
 
 ### Command:
 
@@ -74,7 +93,9 @@ $python3 tmlu_eval.py \
 	--temperature [temperature for generation] \
 	--max_tokens [max new tokens to generate] \
 	--subsets [Choose subsets of TMLU (names splited by comma) for evalutaion. Default is 'ALL'] \
-	--log_dir [Directory for saving evaluation log]
+	--log_dir [Directory for saving evaluation log] \
+	--few_shot_num [The number for few shot example. Range: [0, 5]. Default is 5.] \
+	--cot [Use CoT evaluation.]
 ```
 
 ### Example:
@@ -92,7 +113,7 @@ $python3 tmlu_eval.py \
 
 ## OpenAI
 
-Use the model generate as the prediction.
+Parse the model generation to extract the prediction.
 
 #### before start
 
@@ -107,7 +128,9 @@ $python3 tmlu_eval.py \
 	--temperature [temperature for generation] \
 	--max_tokens [max new tokens to generate] \
 	--subsets [Choose subsets of TMLU (names splited by comma) for evalutaion. Default is 'ALL'] \
-	--log_dir [Directory for saving evaluation log]
+	--log_dir [Directory for saving evaluation log] \
+	--few_shot_num [The number for few shot example. Range: [0, 5]. Default is 5.] \
+	--cot [Use CoT evaluation.]
 ```
 
 ### Example:
@@ -124,7 +147,7 @@ $python3 tmlu_eval.py \
 
 ## Anthropic
 
-Use the model generate as the prediction.
+Parse the model generation to extract the prediction.
 
 #### before start
 
@@ -139,7 +162,9 @@ $python3 tmlu_eval.py \
 	--temperature [temperature for generation] \
 	--max_tokens [max new tokens to generate] \
 	--subsets [Choose subsets of TMLU (names splited by comma) for evalutaion. Default is 'ALL'] \
-	--log_dir [Directory for saving evaluation log]
+	--log_dir [Directory for saving evaluation log] \
+	--few_shot_num [The number for few shot example. Range: [0, 5]. Default is 5.] \
+	--cot [Use CoT evaluation.]
 ```
 
 ### Example:
@@ -154,3 +179,36 @@ $python3 tmlu_eval.py \
 	--log_dir log/gen_based/claude-2.0
 ```
 
+## Gemini-pro
+
+Parse the model generation to extract the prediction.
+
+#### before start
+
+Set environment variable`GOOGLE_API_KEY`.
+
+### Command:
+
+```bash
+$python3 tmlu_eval.py \
+	--backend google \
+	--model [Model name] \
+	--temperature [temperature for generation] \
+	--max_tokens [max new tokens to generate] \
+	--subsets [Choose subsets of TMLU (names splited by comma) for evalutaion. Default is 'ALL'] \
+	--log_dir [Directory for saving evaluation log] \
+	--few_shot_num [The number for few shot example. Range: [0, 5]. Default is 5.] \
+	--cot [Use CoT evaluation.]
+```
+
+### Example:
+
+```bash
+$python3 tmlu_eval.py \
+	--backend google \
+	--model gemini-pro \
+	--temperature 0.0 \
+	--max_tokens 128 \
+	--subsets AST_chinese,AST_mathematics \
+	--log_dir log/gen_based/gemini-pro
+```
