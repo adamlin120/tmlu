@@ -2,7 +2,7 @@ import abc
 from abc import abstractmethod
 from typing import List, Optional, Union
 from vllm import LLM, SamplingParams
-from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer, GenerationConfig, AutoConfig
 from openai import OpenAI, APIError as OpenAI_APIError
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT, APIError as Anthropic_APIError
 import google.generativeai as genai
@@ -42,6 +42,7 @@ class HFLM_vLLM(LM):
         model_name,
         tensor_parallel_size,
         max_tokens,
+        max_length,
         temperature,
         revision=None,
         dtype=None,
@@ -61,23 +62,56 @@ class HFLM_vLLM(LM):
             quantization="AWQ" if "awq" in model_name.lower() else None,
             revision=revision,
             dtype=dtype,
-            download_dir=cache_dir
+            download_dir=cache_dir,
+            trust_remote_code=True
         )
+        generation_config = GenerationConfig.from_pretrained(
+            model_name,
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
+        )
+        config = AutoConfig.from_pretrained(
+            model_name,
+            revision=revision,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
+        )
+        if max_length:
+            self.model_max_length = max_length
+        elif hasattr(generation_config, "max_length"):
+            self.model_max_length = generation_config.max_length
+        elif hasattr(config, "max_position_embeddings"):
+            self.model_max_length = config.max_length.max_position_embeddings
+        else:
+            logger.error("model max length is unknown.")
+            exit()
+
         self.sampling_params = SamplingParams(
-            temperature=self.temperature, max_tokens=self.max_tokens
+            temperature=self.temperature, 
+            max_tokens=self.max_tokens,
+            stop=["問題："]
         )
 
-    def generate(self, dataset, prefill="正確答案：("):
-        dataset = dataset.map(
-            lambda x: {
-                "prompt": self.tokenizer.apply_chat_template(
-                    [{"role": "user", "content": x["prompt"]}],
-                    tokenize=False,
-                    add_generation_prompt=True,
-                ) + prefill
-            },
-            load_from_cache_file=False,
-        )
+    def generate(self, dataset, prefill="正確答案：(", apply_chat_template=True):
+        if apply_chat_template:
+            dataset = dataset.map(
+                lambda x: {
+                    "prompt": self.tokenizer.apply_chat_template(
+                        [{"role": "user", "content": x["prompt"]}],
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    ) + prefill
+                },
+                load_from_cache_file=False,
+            )
+        else:
+            dataset = dataset.map(
+                lambda x: {
+                    "prompt": x["prompt"]+ prefill
+                },
+                load_from_cache_file=False,
+            )
         outputs = self.llm.generate(dataset["prompt"], self.sampling_params)
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         answers = [outputs[i].outputs[0].text for i in range(len(outputs))]
@@ -88,6 +122,7 @@ class HFLM_transformers(LM):
         self,
         model_name,
         max_tokens,
+        max_length,
         temperature,
         revision=None,
         dtype=None,
@@ -114,7 +149,16 @@ class HFLM_transformers(LM):
             cache_dir=cache_dir,
             trust_remote_code=True,
         )
-        self.model_max_length = self.tokenizer.model_max_length
+        if max_length:
+            self.model_max_length = max_length
+        elif hasattr(self.llm.generation_config, "max_length"):
+            self.model_max_length = self.llm.generation_config.max_length
+        elif hasattr(self.llm.config, "max_position_embeddings"):
+            self.model_max_length = self.llm.config.max_length.max_position_embeddings
+        else:
+            logger.error("model max length is unknown.")
+            exit()
+
         self.llm.eval()
     
     def get_tokenizer(self):
@@ -137,17 +181,25 @@ class HFLM_transformers(LM):
         context_enc = context_enc[:, -(self.model_max_length - conti_enc_len):]
         return context_enc, conti_enc
     
-    def generate(self, dataset, prefill="正確答案：("):
-        dataset = dataset.map(
-            lambda x: {
-                "prompt": self.tokenizer.apply_chat_template(
-                    [{"role": "user", "content": x["prompt"]}],
-                    tokenize=False,
-                    add_generation_prompt=True,
-                ) + prefill
-            },
-            load_from_cache_file=False,
-        )
+    def generate(self, dataset, prefill="正確答案：(", apply_chat_template=True):
+        if apply_chat_template:
+            dataset = dataset.map(
+                lambda x: {
+                    "prompt": self.tokenizer.apply_chat_template(
+                        [{"role": "user", "content": x["prompt"]}],
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    ) + prefill
+                },
+                load_from_cache_file=False,
+            )
+        else:
+            dataset = dataset.map(
+                lambda x: {
+                    "prompt": x["prompt"]+ prefill
+                },
+                load_from_cache_file=False,
+            )
         with torch.no_grad():
             answers = []
             for example in tqdm(dataset):

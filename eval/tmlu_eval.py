@@ -83,6 +83,9 @@ def parse_args():
         "--temperature", type=float, default=0.0, help="Sampling temperature."
     )
     parser.add_argument(
+        "--max_length", type=int, default=None, help="Max input length for the open source model. Use max_length in generation_config or max_position_embeddings in config if this arg is not provided"
+    )
+    parser.add_argument(
         "--max_tokens", type=int, default=128, help="Max new tokens to generate for generation based evalutaion."
     )
     parser.add_argument(
@@ -112,6 +115,12 @@ def parse_args():
     parser.add_argument(
         "--cot", action="store_true", help="Use CoT evaluation."
     )
+    parser.add_argument(
+        "--reduce_few_shot", action="store_true", help="Reduce few-shot example number when prompt exceed the model length limit."
+    )
+    parser.add_argument(
+        "--apply_chat_template", action="store_true", help="Apply chat template on the prompts."
+    )
     return parser.parse_args()
 
 
@@ -122,15 +131,46 @@ def format_problem(
         few_shot_examples: List[Dict[str, str]] = None,
         few_shot_num: int = 0,
         cot: bool = False,
+        tokenizer = None,
+        max_length = None,
+        prefill = None,
+        apply_chat_template = True,
     ) -> Tuple[str, List[str]]:
-    prompt = topic_line + "\n\n"
-    if few_shot_examples and few_shot_num:
-        for i in range(few_shot_num):
-            fs_ex = few_shot_examples[i]
-            fs_ex_prompt = model_template(fs_ex, use_cot=cot, include_ans=True)
-            prompt += fs_ex_prompt + "\n\n"
-    example_prompt = model_template(example, use_cot=cot, include_ans=False)
-    prompt += example_prompt
+    if tokenizer == None:
+        prompt = topic_line + "\n\n"
+        if few_shot_examples and few_shot_num:
+            for i in range(few_shot_num):
+                fs_ex = few_shot_examples[i]
+                fs_ex_prompt = model_template(fs_ex, use_cot=cot, include_ans=True)
+                prompt += fs_ex_prompt + "\n\n"
+        example_prompt = model_template(example, use_cot=cot, include_ans=False)
+        prompt += example_prompt
+    else:
+        prompt = topic_line + "\n\n"
+        example_prompt = model_template(example, use_cot=cot, include_ans=False)
+        if apply_chat_template:
+            template = tokenizer.apply_chat_template(
+                [{"role": "user", "content": ""}], 
+                tokenize=False, 
+                add_generation_prompt=True
+            ) + prefill
+        else:
+            template = prefill
+        left_length = max_length
+        left_length -= len(tokenizer.encode(prompt, add_special_tokens=False))
+        left_length -= len(tokenizer.encode(example_prompt, add_special_tokens=False))
+        left_length -= len(tokenizer.encode(template, add_special_tokens=False))
+        if few_shot_examples and few_shot_num:
+            for i in range(few_shot_num):
+                fs_ex = few_shot_examples[i]
+                fs_ex_prompt = model_template(fs_ex, use_cot=cot, include_ans=True)
+                fs_ex_prompt += "\n\n"
+                fs_ex_prompt_length = len(tokenizer.encode(fs_ex_prompt, add_special_tokens=False))
+                if left_length - fs_ex_prompt_length > 0:
+                    prompt += fs_ex_prompt
+                    left_length -= fs_ex_prompt_length
+
+        prompt += example_prompt
     example["prompt"] = prompt
     return example
 
@@ -184,6 +224,7 @@ if __name__ == "__main__":
         model = HFLM_transformers(
             model_name=args.model,
             max_tokens=args.max_tokens,
+            max_length=args.max_length,
             temperature=args.temperature,
             revision=args.revision,
             dtype=args.dtype,
@@ -194,6 +235,7 @@ if __name__ == "__main__":
             model_name=args.model, 
             tensor_parallel_size=args.tensor_parallel_size,
             max_tokens=args.max_tokens,
+            max_length=args.max_length,
             temperature=args.temperature,
             revision=args.revision,
             dtype=args.dtype,
@@ -299,34 +341,77 @@ if __name__ == "__main__":
                 outputs = model.generate(test_data, prefill="")
 
         elif args.backend == 'hf':
-            test_data = test_data.map(
-                format_problem,
-                load_from_cache_file=False,
-                fn_kwargs={
-                    "model_template": hf_template,
-                    "few_shot_examples" : fs_data,
-                    "few_shot_num": args.few_shot_num,
-                    "cot": args.cot
-                }
+            if args.reduce_few_shot:
+                test_data = test_data.map(
+                    format_problem,
+                    load_from_cache_file=False,
+                    fn_kwargs={
+                        "model_template": hf_template,
+                        "few_shot_examples" : fs_data,
+                        "few_shot_num": args.few_shot_num,
+                        "cot": args.cot,
+                        "tokenizer": model.tokenizer,
+                        "max_length": model.model_max_length,
+                        "prefill": "\n正確答案：(",
+                        "apply_chat_template": args.apply_chat_template
+                    }
+                )
+            else:
+                test_data = test_data.map(
+                    format_problem,
+                    load_from_cache_file=False,
+                    fn_kwargs={
+                        "model_template": hf_template,
+                        "few_shot_examples" : fs_data,
+                        "few_shot_num": args.few_shot_num,
+                        "cot": args.cot
+                    }
+                )
+            outputs = model.generate(
+                test_data, 
+                prefill="\n正確答案：(",
+                apply_chat_template=args.apply_chat_template
             )
-            outputs = model.generate(test_data, prefill="\n正確答案：(")
 
         else:
-            test_data = test_data.map(
-                format_problem,
-                load_from_cache_file=False, 
-                fn_kwargs={
-                    "model_template": hf_template,
-                    "few_shot_examples" : fs_data,
-                    "few_shot_num": args.few_shot_num,
-                    "cot": args.cot
-                }
-            )
             if args.cot:
-                outputs = model.generate(test_data, prefill="\n讓我們一步一步思考。\n")
+                prefill = "\n讓我們一步一步思考。\n"
             else:
-                outputs = model.generate(test_data, prefill="\n正確答案：(")
-        
+                prefill="\n正確答案：("
+
+            if args.reduce_few_shot:
+                test_data = test_data.map(
+                    format_problem,
+                    load_from_cache_file=False, 
+                    fn_kwargs={
+                        "model_template": hf_template,
+                        "few_shot_examples" : fs_data,
+                        "few_shot_num": args.few_shot_num,
+                        "cot": args.cot,
+                        "tokenizer": model.tokenizer,
+                        "max_length": model.model_max_length,
+                        "prefill": prefill,
+                        "apply_chat_template": args.apply_chat_template
+                    },
+                )
+            else:
+                test_data = test_data.map(
+                    format_problem,
+                    load_from_cache_file=False, 
+                    fn_kwargs={
+                        "model_template": hf_template,
+                        "few_shot_examples" : fs_data,
+                        "few_shot_num": args.few_shot_num,
+                        "cot": args.cot
+                    }
+                )
+            
+            outputs = model.generate(
+                test_data, 
+                prefill=prefill,
+                apply_chat_template=args.apply_chat_template
+            )
+
         if args.overwrite_log_dir:
             output_file_open_type = "w"
         else:
